@@ -49,7 +49,7 @@ const W = canvas.width, H = canvas.height;
 // ================= 設定（バランス調整はここをいじる） =================
 const CONF = {
   playerX: 180,            // プレーヤーの画面上の固定X
-  courseLength: 15000,     // コース全長（ワールド座標px）。10px = 1m
+  courseLength: 21000,     // コース全長（ワールド座標px）。10px = 1m
   minSpeed: 20,            // スピードゲージ最小値（ジョグ）
   maxSpeed: 100,           // スピードゲージ最大値
   speedUpRate: 55,         // Shift押下中のゲージ上昇/秒
@@ -61,9 +61,9 @@ const CONF = {
 
   hpMax: 100,
   // 体力消費: (base + (speed/100)^2 * sprintCost) * 地形係数 [/秒]
-  drainBase: 0.7,
+  drainBase: 0.6,
   drainSprint: 4.2,
-  slopeUphill: 1.9,        // 上り坂の消費係数（勾配に応じて1.0→この値へ）
+  slopeUphill: 1.75,        // 上り坂の消費係数（勾配に応じて1.0→この値へ）
   slopeDownhill: 0.55,     // 下り坂の消費係数
   tiredThreshold: 50,      // これ以下で最大スピードが低下し始めるHP
   tiredMinMaxSpeed: 35,    // HP0時点の最大スピード
@@ -80,7 +80,7 @@ const FOODS = [
   { id: "drink",  name: "ドリンク", heal: 30, color: "#4fc3f7" },
   { id: "onigiri",name: "おにぎり", heal: 45, color: "#f5f5f5" },
 ];
-const SNACK_HEAL = 12; // 栄養スナックバー（取った瞬間に回復）
+const SNACK_HEAL = 15; // 栄養スナックバー（取った瞬間に回復）
 
 // 障害物ダメージ
 const HAZARD = {
@@ -89,54 +89,71 @@ const HAZARD = {
   cliff: { w: 90,  dmg: 35, name: "ガケ" },
 };
 
-// ================= コース1 定義 =================
-// 地形: [長さpx, 標高変化px] の折れ線
+// ================= コース1 定義（高山コース 2100m） =================
+// 地形: [長さpx, 標高変化px] の折れ線。急勾配の登りで2つのピークを越える
 const SEGMENTS = [
-  [800, 0], [600, +80], [400, 0], [500, -60], [600, 0],
-  [900, +160], [500, 0], [700, -120], [800, 0],
-  [500, +70], [400, -50], [700, 0],
-  [1000, +180], [400, 0], [900, -160], [800, 0],
-  [600, +90], [600, -90], [2100, 0],
+  [800, 0],            // スタートの平地
+  [1000, +220],        // 登り始め
+  [300, 0],
+  [1200, +400],        // 急登①
+  [500, -150],         // 小さな下り（沢）
+  [300, 0],
+  [1500, +520],        // 急登②（長い）
+  [300, 0],            // 尾根
+  [900, +330],         // 山頂への急登
+  [400, 0],            // ★第1ピーク（標高1320）
+  [1200, -430],        // 下り
+  [500, -120],
+  [400, 0],            // 鞍部（谷）
+  [1000, +330],        // 登り返し
+  [300, 0],            // ★第2ピーク（標高1100）
+  [1400, -500],        // 長い下り
+  [400, 0],            // 谷
+  [800, +240],         // 登り返し
+  [1600, -560],        // 大下り
+  [500, 0],
+  [600, +170],         // 最後の登り
+  [1300, -430],        // 下り
+  [400, 0],
+  [200, -20],          // ふもとへ
+  [1200, 0],           // ゴールへの平地
 ];
 
-// 障害物: ワールドX位置
+// 障害物: ワールドX位置。川(river)は下り坂か谷のみに出現（登りには置かない）
 const HAZARDS = [
-  { type: "rock",  x: 1250 },
-  { type: "rock",  x: 2600 },
-  { type: "river", x: 3300 },
-  { type: "cliff", x: 4600 },
-  { type: "rock",  x: 5300 },
-  { type: "river", x: 6050 },
-  { type: "rock",  x: 7600 },
-  { type: "cliff", x: 8900 },
-  { type: "rock",  x: 10800 },
-  { type: "river", x: 12200 },
-  { type: "cliff", x: 13000 },
-  { type: "rock",  x: 13800 },
+  { type: "rock",  x: 1300 },   // 登り
+  { type: "rock",  x: 2700 },   // 急登①
+  { type: "river", x: 3550 },   // 沢の下り
+  { type: "rock",  x: 4700 },   // 急登②
+  { type: "cliff", x: 5700 },   // 尾根
+  { type: "rock",  x: 6300 },   // 山頂への登り
+  { type: "river", x: 7800 },   // 第1ピークからの下り
+  { type: "river", x: 9050 },   // 鞍部の谷
+  { type: "rock",  x: 9900 },   // 登り返し
+  { type: "river", x: 11400 },  // 第2ピークからの下り
+  { type: "cliff", x: 12550 },  // 谷の先
+  { type: "cliff", x: 13500 },  // 大下り
+  { type: "river", x: 14300 },  // 大下り
+  { type: "rock",  x: 15550 },  // 最後の登り
+  { type: "cliff", x: 16500 },  // 下り
+  { type: "river", x: 19600 },  // ふもとの平地（谷）
 ];
 
 // アイテム出現: ジャンプで届く高さ（地面から約95px上）に浮いている
 // kind: "snack"=栄養スナックバー(即回復) / それ以外はFOODSのid(持ち物に追加)
 const PICKUPS = [
-  { kind: "candy",   x: 900 },
-  { kind: "snack",   x: 1650 },
-  { kind: "banana",  x: 2100 },
-  { kind: "drink",   x: 2950 },
-  { kind: "candy",   x: 3900 },
-  { kind: "snack",   x: 4300 },
-  { kind: "banana",  x: 5000 },
-  { kind: "onigiri", x: 5700 },
-  { kind: "snack",   x: 6500 },
-  { kind: "drink",   x: 7200 },
-  { kind: "candy",   x: 8000 },
-  { kind: "snack",   x: 8600 },
-  { kind: "banana",  x: 9500 },
-  { kind: "drink",   x: 10300 },
-  { kind: "onigiri", x: 11200 },
-  { kind: "candy",   x: 11800 },
-  { kind: "snack",   x: 12600 },
-  { kind: "onigiri", x: 13400 },
-  { kind: "snack",   x: 14200 },
+  { kind: "snack",   x: 1900 },
+  { kind: "candy",   x: 3000 },
+  { kind: "banana",  x: 4600 },
+  { kind: "drink",   x: 5850 },
+  { kind: "snack",   x: 7300 },
+  { kind: "onigiri", x: 8950 },
+  { kind: "candy",   x: 10400 },
+  { kind: "drink",   x: 12300 },
+  { kind: "snack",   x: 13900 },
+  { kind: "banana",  x: 15400 },
+  { kind: "onigiri", x: 17400 },
+  { kind: "snack",   x: 19300 },
 ];
 
 // ================= 地形の高さ計算 =================
@@ -206,7 +223,7 @@ function reset() {
     py: groundY(0),      // プレーヤーの足元Y
     vy: 0,
     onGround: true,
-    inventory: { candy: 2, banana: 1, drink: 0, onigiri: 0 },
+    inventory: { candy: 2, banana: 2, drink: 0, onigiri: 0 },
     selected: 0,         // FOODSのindex
     time: 0,
     flash: 0,            // 被ダメ時の画面フラッシュ
@@ -216,6 +233,7 @@ function reset() {
     eatCooldown: 0,
     legPhase: 0,
     resultRank: -1,      // ゴール時のベスト5順位（0始まり、圏外は-1）
+    camY: 360 - groundY(0), // 縦方向カメラオフセット（プレーヤーを画面高さ360付近に保つ）
   };
 }
 reset();
@@ -323,6 +341,10 @@ function update(dt) {
   const drain = (CONF.drainBase + spNorm * spNorm * CONF.drainSprint) * terrainFactor;
   state.hp -= drain * dt;
 
+  // --- カメラの縦追従（山の高低差に合わせてゆっくり追う） ---
+  const camTarget = 360 - state.py;
+  state.camY += (camTarget - state.camY) * Math.min(1, dt * 4);
+
   // --- 疲労による回復上限の低下 ---
   if (state.hp < CONF.capDropBelow) {
     state.hpCap = Math.max(CONF.capMin, state.hpCap - CONF.capDropRate * dt);
@@ -377,6 +399,25 @@ function update(dt) {
 
 // ================= 描画 =================
 function wx2sx(wx) { return CONF.playerX + (wx - state.worldX); } // ワールド→画面X
+function wy2sy(wy) { return wy + state.camY; }                    // ワールド→画面Y
+
+// 標高で地面の色が変わる: 草原 → 岩場 → 雪
+function lerpRGB(a, b, t) {
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+}
+const COL_GRASS = [122, 158, 86], COL_ROCK = [118, 110, 102], COL_SNOW = [236, 241, 248];
+const COL_TRAIL_G = [160, 118, 76], COL_TRAIL_R = [86, 80, 74], COL_TRAIL_S = [196, 208, 224];
+function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+function groundColor(elev) {
+  const t1 = clamp01((elev - 300) / 200), t2 = clamp01((elev - 800) / 200);
+  const c = lerpRGB(lerpRGB(COL_GRASS, COL_ROCK, t1), COL_SNOW, t2);
+  return `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`;
+}
+function trailColor(elev) {
+  const t1 = clamp01((elev - 300) / 200), t2 = clamp01((elev - 800) / 200);
+  const c = lerpRGB(lerpRGB(COL_TRAIL_G, COL_TRAIL_R, t1), COL_TRAIL_S, t2);
+  return `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`;
+}
 
 function draw() {
   // 空
@@ -422,11 +463,12 @@ function drawBgMountains() {
 }
 function drawRidge(parallax, baseY, amp, wave) {
   const off = state.worldX * parallax;
+  const camOff = (state.camY - (360 - BASE_Y)) * parallax * 0.6; // 遠景ほど動きが小さい
   ctx.beginPath();
   ctx.moveTo(0, H);
   for (let sx = 0; sx <= W; sx += 20) {
     const t = (sx + off) / wave;
-    const y = baseY - (Math.sin(t) * 0.6 + Math.sin(t * 2.3) * 0.4) * amp * 0.5 - amp * 0.3;
+    const y = baseY + camOff - (Math.sin(t) * 0.6 + Math.sin(t * 2.3) * 0.4) * amp * 0.5 - amp * 0.3;
     ctx.lineTo(sx, y);
   }
   ctx.lineTo(W, H);
@@ -435,24 +477,29 @@ function drawRidge(parallax, baseY, amp, wave) {
 }
 
 function drawGround() {
-  ctx.beginPath();
-  ctx.moveTo(0, H);
-  for (let sx = 0; sx <= W; sx += 6) {
-    ctx.lineTo(sx, groundY(state.worldX + (sx - CONF.playerX)));
+  // 標高で色が変わるため、短冊状に分割して描画
+  const STEP = 8;
+  for (let sx = 0; sx <= W; sx += STEP) {
+    const w0 = state.worldX + (sx - CONF.playerX);
+    const w1 = w0 + STEP;
+    const y0 = wy2sy(groundY(w0)), y1 = wy2sy(groundY(w1));
+    const elev = elevation(w0 + STEP / 2);
+    ctx.fillStyle = groundColor(elev);
+    ctx.beginPath();
+    ctx.moveTo(sx - 0.5, y0);
+    ctx.lineTo(sx + STEP + 0.5, y1);
+    ctx.lineTo(sx + STEP + 0.5, H);
+    ctx.lineTo(sx - 0.5, H);
+    ctx.closePath();
+    ctx.fill();
+    // トレイル（道）
+    ctx.strokeStyle = trailColor(elev);
+    ctx.lineWidth = 7;
+    ctx.beginPath();
+    ctx.moveTo(sx - 0.5, y0);
+    ctx.lineTo(sx + STEP + 0.5, y1);
+    ctx.stroke();
   }
-  ctx.lineTo(W, H);
-  ctx.closePath();
-  ctx.fillStyle = "#7a9e56";
-  ctx.fill();
-  // トレイル（土の道）
-  ctx.beginPath();
-  for (let sx = 0; sx <= W; sx += 6) {
-    const y = groundY(state.worldX + (sx - CONF.playerX));
-    sx === 0 ? ctx.moveTo(sx, y) : ctx.lineTo(sx, y);
-  }
-  ctx.strokeStyle = "#a0764c";
-  ctx.lineWidth = 7;
-  ctx.stroke();
 }
 
 function drawHazards() {
@@ -461,7 +508,8 @@ function drawHazards() {
     const def = HAZARD[hz.type];
     const sx = wx2sx(hz.x);
     if (sx < -200 || sx > W + 200) continue;
-    const gy = groundY(hz.x + def.w / 2);
+    const gY = (wx) => wy2sy(groundY(wx));
+    const gy = gY(hz.x + def.w / 2);
     if (hz.type === "rock") {
       ctx.fillStyle = "#6e6e6e";
       ctx.beginPath();
@@ -479,8 +527,8 @@ function drawHazards() {
     } else if (hz.type === "river") {
       ctx.fillStyle = "#4a90d9";
       ctx.beginPath();
-      ctx.moveTo(sx, groundY(hz.x) + 2);
-      ctx.quadraticCurveTo(sx + def.w / 2, gy + 30, sx + def.w, groundY(hz.x + def.w) + 2);
+      ctx.moveTo(sx, gY(hz.x) + 2);
+      ctx.quadraticCurveTo(sx + def.w / 2, gy + 30, sx + def.w, gY(hz.x + def.w) + 2);
       ctx.closePath();
       ctx.fill();
       // 波しぶき
@@ -496,10 +544,10 @@ function drawHazards() {
       // 崖の割れ目
       ctx.fillStyle = "#3a3028";
       ctx.beginPath();
-      ctx.moveTo(sx, groundY(hz.x));
+      ctx.moveTo(sx, gY(hz.x));
       ctx.lineTo(sx + def.w * 0.35, gy + 90);
       ctx.lineTo(sx + def.w * 0.65, gy + 90);
-      ctx.lineTo(sx + def.w, groundY(hz.x + def.w));
+      ctx.lineTo(sx + def.w, gY(hz.x + def.w));
       ctx.closePath();
       ctx.fill();
       ctx.strokeStyle = "#241d16";
@@ -522,7 +570,7 @@ function drawPickups() {
     const p = PICKUPS[i];
     const sx = wx2sx(p.x);
     if (sx < -60 || sx > W + 60) continue;
-    const sy = groundY(p.x) - 95 + Math.sin(state.time * 3 + i) * 5;
+    const sy = wy2sy(groundY(p.x)) - 95 + Math.sin(state.time * 3 + i) * 5;
     // 光る背景
     ctx.fillStyle = "rgba(255,255,255,0.35)";
     ctx.beginPath();
@@ -588,7 +636,7 @@ function drawItemIcon(kind, x, y, s) {
 function drawGoal() {
   const sx = wx2sx(CONF.courseLength);
   if (sx < -100 || sx > W + 100) return;
-  const gy = groundY(CONF.courseLength);
+  const gy = wy2sy(groundY(CONF.courseLength));
   ctx.fillStyle = "#333";
   ctx.fillRect(sx, gy - 90, 4, 90);
   ctx.fillStyle = "#e33";
@@ -605,7 +653,7 @@ function drawGoal() {
 }
 
 function drawPlayer() {
-  const x = CONF.playerX, footY = state.py;
+  const x = CONF.playerX, footY = wy2sy(state.py);
   const slope = slopeAt(state.worldX);
   const lean = state.onGround ? Math.atan(-slope) * 0.5 : 0.15;
 
@@ -626,6 +674,21 @@ function drawPlayer() {
   ctx.strokeStyle = "#e05a3a";
   ctx.lineWidth = 6;
   ctx.beginPath(); ctx.moveTo(0, -26); ctx.lineTo(4, -46); ctx.stroke();
+  // リュック（背中側）
+  const bob = state.onGround ? Math.abs(Math.sin(state.legPhase)) * 1.5 : 0; // 走りに合わせて揺れる
+  ctx.fillStyle = "#2e8b57";
+  roundRect(-11, -47 + bob, 10, 18, 4);
+  ctx.fill();
+  ctx.fillStyle = "#246e45";
+  roundRect(-11, -38 + bob, 10, 6, 2); // 下部ポケット
+  ctx.fill();
+  ctx.fillStyle = "#ffd93b";
+  roundRect(-9, -45 + bob, 6, 3, 1.5); // 雨蓋のバックル
+  ctx.fill();
+  // ショルダーストラップ
+  ctx.strokeStyle = "#246e45";
+  ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(-2, -45 + bob * 0.5); ctx.lineTo(5, -40); ctx.stroke();
   // 腕
   ctx.strokeStyle = "#e05a3a";
   ctx.lineWidth = 3.5;
