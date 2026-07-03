@@ -167,6 +167,33 @@ function groundY(wx) { return BASE_Y - elevation(wx); }
 // 勾配: 正=上り、負=下り
 function slopeAt(wx) { return (elevation(wx + 12) - elevation(wx - 12)) / 24; }
 
+// ================= ベストタイム記録（ベスト5） =================
+const BEST_KEY = "trailrun_best_course1";
+function loadBest() {
+  try {
+    const v = JSON.parse(localStorage.getItem(BEST_KEY));
+    if (Array.isArray(v)) return v.filter((n) => typeof n === "number").slice(0, 5);
+  } catch (e) { /* localStorageが使えない環境では記録なし扱い */ }
+  return [];
+}
+function saveBest(list) {
+  try { localStorage.setItem(BEST_KEY, JSON.stringify(list)); } catch (e) {}
+}
+let bestTimes = loadBest();
+// ゴールタイムを記録し、ベスト5内なら順位(0始まり)を、圏外なら-1を返す
+function recordTime(t) {
+  const list = [...bestTimes, t].sort((a, b) => a - b).slice(0, 5);
+  const rank = list.indexOf(t);
+  bestTimes = list;
+  saveBest(list);
+  return rank;
+}
+function formatTime(t) {
+  const m = Math.floor(t / 60);
+  const s = t - m * 60;
+  return `${m}:${s.toFixed(1).padStart(4, "0")}`;
+}
+
 // ================= ゲーム状態 =================
 let state;
 function reset() {
@@ -188,6 +215,7 @@ function reset() {
     pickupsTaken: new Set(),
     eatCooldown: 0,
     legPhase: 0,
+    resultRank: -1,      // ゴール時のベスト5順位（0始まり、圏外は-1）
   };
 }
 reset();
@@ -341,7 +369,10 @@ function update(dt) {
 
   // --- 終了判定 ---
   if (state.hp <= 0) { state.hp = 0; state.phase = "gameover"; }
-  if (state.worldX >= CONF.courseLength) state.phase = "clear";
+  if (state.worldX >= CONF.courseLength) {
+    state.phase = "clear";
+    state.resultRank = recordTime(Math.round(state.time * 10) / 10);
+  }
 }
 
 // ================= 描画 =================
@@ -367,9 +398,19 @@ function draw() {
     ctx.fillStyle = `rgba(255,40,40,${state.flash * 0.25})`;
     ctx.fillRect(0, 0, W, H);
   }
-  if (state.phase === "title")    drawOverlay("⛰ トレイルランニング", "スペースキーでスタート");
+  if (state.phase === "title") {
+    drawOverlay("⛰ トレイルランニング", "スペースキーでスタート");
+    drawBestTimes(-1);
+  }
   if (state.phase === "gameover") drawOverlay("リタイア…", `走行距離 ${Math.round(state.worldX / 10)}m ／ Rキーで再挑戦`);
-  if (state.phase === "clear")    drawOverlay("🏁 ゴール！", `タイム ${state.time.toFixed(1)}秒 ／ Rキーでもう一度`);
+  if (state.phase === "clear") {
+    const isNewRecord = state.resultRank === 0;
+    drawOverlay(
+      isNewRecord ? "🏆 ベストタイム更新！" : "🏁 ゴール！",
+      `タイム ${formatTime(state.time)} ／ Rキーでもう一度`
+    );
+    drawBestTimes(state.resultRank);
+  }
 }
 
 function drawBgMountains() {
@@ -665,6 +706,21 @@ function drawHUD() {
   ctx.fillText(`${Math.round(state.worldX / 10)} / ${CONF.courseLength / 10} m`, gx + gw, 80);
   ctx.textAlign = "left";
 
+  // --- タイム（画面上部中央） ---
+  ctx.fillStyle = "rgba(20, 28, 42, 0.78)";
+  roundRect(W / 2 - 70, 10, 140, 34, 8);
+  ctx.fill();
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "bold 20px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("⏱ " + formatTime(state.time), W / 2, 34);
+  if (bestTimes.length > 0) {
+    ctx.fillStyle = "#9fb0c8";
+    ctx.font = "11px sans-serif";
+    ctx.fillText("ベスト " + formatTime(bestTimes[0]), W / 2, 56);
+  }
+  ctx.textAlign = "left";
+
   // --- 進行バー（画面下部） ---
   const pbY = H - 16;
   ctx.fillStyle = "rgba(20,28,42,0.6)";
@@ -732,6 +788,27 @@ function roundRect(x, y, w, h, r) {
   ctx.arcTo(x, y + h, x, y, r);
   ctx.arcTo(x, y, x + w, y, r);
   ctx.closePath();
+}
+
+// ベスト5の一覧を表示（highlightRank: 今回の記録の順位をハイライト、-1でなし）
+function drawBestTimes(highlightRank) {
+  if (bestTimes.length === 0) return;
+  const bx = W / 2, by = H / 2 + 95;
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#ffd93b";
+  ctx.font = "bold 15px sans-serif";
+  ctx.fillText("— ベスト5 —", bx, by);
+  ctx.font = "14px sans-serif";
+  for (let i = 0; i < bestTimes.length; i++) {
+    const isNew = i === highlightRank;
+    ctx.fillStyle = isNew ? "#ffd93b" : "#cfe0f5";
+    ctx.font = isNew ? "bold 15px sans-serif" : "14px sans-serif";
+    ctx.fillText(
+      `${i + 1}位  ${formatTime(bestTimes[i])}${isNew ? "  ← 今回！" : ""}`,
+      bx, by + 22 + i * 21
+    );
+  }
+  ctx.textAlign = "left";
 }
 
 function drawOverlay(title, sub) {
