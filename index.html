@@ -52,8 +52,12 @@ const CONF = {
   courseLength: 21000,     // コース全長（ワールド座標px）。10px = 1m
   minSpeed: 20,            // スピードゲージ最小値（ジョグ）
   maxSpeed: 100,           // スピードゲージ最大値
-  speedUpRate: 55,         // Shift押下中のゲージ上昇/秒
+  speedUpRate: 55,         // Shift押下中のゲージ上昇/秒（下り坂での値）
   speedDownRate: 45,       // 離した時のゲージ下降/秒
+  // 地形によるスピードの上がりやすさ（speedUpRateへの倍率）
+  speedRiseDown: 1.0,      // 下り坂: そのまま上がる
+  speedRiseFlat: 0.6,      // 平地: それなりに上がる
+  speedRiseUphill: 0.15,   // 急登: ほとんど上がらない（勾配に応じて平地→この値へ）
   scrollMin: 1.6,          // ゲージ最小時のスクロール速度 px/frame
   scrollMax: 7.0,          // ゲージ最大時のスクロール速度 px/frame
   gravity: 0.65,
@@ -313,10 +317,22 @@ function update(dt) {
   for (const m of state.messages) m.timer -= dt;
   state.messages = state.messages.filter((m) => m.timer > 0);
 
-  // --- スピードゲージ ---
+  // --- 地形の勾配（スピード上昇率と体力消費の両方で使う） ---
+  const slope = slopeAt(state.worldX);
+  let slopeT = 0, downT = 0; // 登り/下りの急さ 0..1
+  if (slope > 0.01)       slopeT = Math.min(1, slope / 0.25);
+  else if (slope < -0.01) downT  = Math.min(1, -slope / 0.25);
+
+  // --- スピードゲージ（登りでは上がりにくく、下りでは軽く上がる） ---
   const boosting = keys["ShiftLeft"] || keys["ShiftRight"];
-  if (boosting) state.speed += CONF.speedUpRate * dt;
-  else          state.speed -= CONF.speedDownRate * dt;
+  if (boosting) {
+    const rise = slopeT > 0
+      ? CONF.speedRiseFlat + (CONF.speedRiseUphill - CONF.speedRiseFlat) * slopeT
+      : CONF.speedRiseFlat + (CONF.speedRiseDown - CONF.speedRiseFlat) * downT;
+    state.speed += CONF.speedUpRate * rise * dt;
+  } else {
+    state.speed -= CONF.speedDownRate * dt;
+  }
   const maxSp = effectiveMaxSpeed();
   state.speed = Math.max(CONF.minSpeed, Math.min(maxSp, state.speed));
 
@@ -336,14 +352,9 @@ function update(dt) {
   }
 
   // --- 体力消費（速度 × 地形） ---
-  const slope = slopeAt(state.worldX);
-  let terrainFactor = 1.0, slopeT = 0; // slopeT: 登りの急さ 0..1
-  if (slope > 0.01) {
-    slopeT = Math.min(1, slope / 0.25);
-    terrainFactor = 1.0 + (CONF.slopeUphill - 1.0) * slopeT;
-  } else if (slope < -0.01) {
-    terrainFactor = 1.0 - (1.0 - CONF.slopeDownhill) * Math.min(1, -slope / 0.25);
-  }
+  let terrainFactor = 1.0;
+  if (slopeT > 0)     terrainFactor = 1.0 + (CONF.slopeUphill - 1.0) * slopeT;
+  else if (downT > 0) terrainFactor = 1.0 - (1.0 - CONF.slopeDownhill) * downT;
   // 歩行（最低スピード）でも基礎消費分は僅かに減る
   const spT = (state.speed - CONF.minSpeed) / (CONF.maxSpeed - CONF.minSpeed); // 0=歩行, 1=全力
   const runCost = spT * spT * CONF.drainSprint * terrainFactor
