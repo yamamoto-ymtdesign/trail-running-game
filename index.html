@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>トレイルランニング</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    background: #1a2230;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    min-height: 100vh;
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif;
+    color: #dde5f0;
+  }
+  h1 { font-size: 20px; margin: 12px 0 8px; letter-spacing: 2px; }
+  canvas {
+    background: #87ceeb;
+    border: 2px solid #3a4a60;
+    border-radius: 6px;
+    max-width: 96vw;
+  }
+  .help {
+    margin-top: 10px; font-size: 13px; color: #9fb0c8;
+    text-align: center; line-height: 1.7;
+  }
+  kbd {
+    background: #2c3a50; border: 1px solid #4a5a72; border-radius: 4px;
+    padding: 1px 6px; font-size: 12px;
+  }
+</style>
+</head>
+<body>
+<h1>⛰ トレイルランニング — コース1</h1>
+<canvas id="game" width="960" height="540"></canvas>
+<div class="help">
+  <kbd>スペース</kbd> ジャンプ ／ <kbd>Shift</kbd> 押しっぱなしでスピードアップ ／
+  <kbd>←</kbd><kbd>→</kbd> 補給食を選択 ／ <kbd>E</kbd> エネルギー補給 ／ <kbd>R</kbd> リスタート
+</div>
+
+<script>
+"use strict";
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const W = canvas.width, H = canvas.height;
+
+// ================= 設定（バランス調整はここをいじる） =================
+const CONF = {
+  playerX: 180,            // プレーヤーの画面上の固定X
+  courseLength: 15000,     // コース全長（ワールド座標px）。10px = 1m
+  minSpeed: 20,            // スピードゲージ最小値（ジョグ）
+  maxSpeed: 100,           // スピードゲージ最大値
+  speedUpRate: 55,         // Shift押下中のゲージ上昇/秒
+  speedDownRate: 45,       // 離した時のゲージ下降/秒
+  scrollMin: 1.6,          // ゲージ最小時のスクロール速度 px/frame
+  scrollMax: 7.0,          // ゲージ最大時のスクロール速度 px/frame
+  gravity: 0.65,
+  jumpVel: -13.5,
+
+  hpMax: 100,
+  // 体力消費: (base + (speed/100)^2 * sprintCost) * 地形係数 [/秒]
+  drainBase: 0.7,
+  drainSprint: 4.2,
+  slopeUphill: 1.9,        // 上り坂の消費係数（勾配に応じて1.0→この値へ）
+  slopeDownhill: 0.55,     // 下り坂の消費係数
+  tiredThreshold: 50,      // これ以下で最大スピードが低下し始めるHP
+  tiredMinMaxSpeed: 35,    // HP0時点の最大スピード
+  // 回復上限（疲労の蓄積）: HPがcapDropBelowを下回っている間、回復上限が徐々に低下
+  capDropBelow: 35,
+  capDropRate: 2.5,        // 回復上限の低下量/秒
+  capMin: 55,              // 回復上限の下限
+};
+
+// 補給食の定義（飴 < バナナ < ドリンク < おにぎり）
+const FOODS = [
+  { id: "candy",  name: "飴",       heal: 8,  color: "#ff6fa0" },
+  { id: "banana", name: "バナナ",   heal: 18, color: "#ffd93b" },
+  { id: "drink",  name: "ドリンク", heal: 30, color: "#4fc3f7" },
+  { id: "onigiri",name: "おにぎり", heal: 45, color: "#f5f5f5" },
+];
+const SNACK_HEAL = 12; // 栄養スナックバー（取った瞬間に回復）
+
+// 障害物ダメージ
+const HAZARD = {
+  rock:  { w: 60,  dmg: 15, name: "岩場" },
+  river: { w: 110, dmg: 25, name: "川" },
+  cliff: { w: 90,  dmg: 35, name: "ガケ" },
+};
+
+// ================= コース1 定義 =================
+// 地形: [長さpx, 標高変化px] の折れ線
+const SEGMENTS = [
+  [800, 0], [600, +80], [400, 0], [500, -60], [600, 0],
+  [900, +160], [500, 0], [700, -120], [800, 0],
+  [500, +70], [400, -50], [700, 0],
+  [1000, +180], [400, 0], [900, -160], [800, 0],
+  [600, +90], [600, -90], [2100, 0],
+];
+
+// 障害物: ワールドX位置
+const HAZARDS = [
+  { type: "rock",  x: 1250 },
+  { type: "rock",  x: 2600 },
+  { type: "river", x: 3300 },
+  { type: "cliff", x: 4600 },
+  { type: "rock",  x: 5300 },
+  { type: "river", x: 6050 },
+  { type: "rock",  x: 7600 },
+  { type: "cliff", x: 8900 },
+  { type: "rock",  x: 10800 },
+  { type: "river", x: 12200 },
+  { type: "cliff", x: 13000 },
+  { type: "rock",  x: 13800 },
+];
+
+// アイテム出現: ジャンプで届く高さ（地面から約95px上）に浮いている
+// kind: "snack"=栄養スナックバー(即回復) / それ以外はFOODSのid(持ち物に追加)
+const PICKUPS = [
+  { kind: "candy",   x: 900 },
+  { kind: "snack",   x: 1650 },
+  { kind: "banana",  x: 2100 },
+  { kind: "drink",   x: 2950 },
+  { kind: "candy",   x: 3900 },
+  { kind: "snack",   x: 4300 },
+  { kind: "banana",  x: 5000 },
+  { kind: "onigiri", x: 5700 },
+  { kind: "snack",   x: 6500 },
+  { kind: "drink",   x: 7200 },
+  { kind: "candy",   x: 8000 },
+  { kind: "snack",   x: 8600 },
+  { kind: "banana",  x: 9500 },
+  { kind: "drink",   x: 10300 },
+  { kind: "onigiri", x: 11200 },
+  { kind: "candy",   x: 11800 },
+  { kind: "snack",   x: 12600 },
+  { kind: "onigiri", x: 13400 },
+  { kind: "snack",   x: 14200 },
+];
+
+// ================= 地形の高さ計算 =================
+const BASE_Y = 440; // 標高0の地面Y
+const elevPoints = (() => {
+  const pts = [{ x: -2000, e: 0 }];
+  let x = 0, e = 0;
+  pts.push({ x, e });
+  for (const [len, de] of SEGMENTS) {
+    x += len; e += de;
+    pts.push({ x, e });
+  }
+  pts.push({ x: x + 5000, e });
+  return pts;
+})();
+
+function elevation(wx) {
+  for (let i = 1; i < elevPoints.length; i++) {
+    if (wx <= elevPoints[i].x) {
+      const a = elevPoints[i - 1], b = elevPoints[i];
+      const t = (wx - a.x) / (b.x - a.x);
+      return a.e + (b.e - a.e) * t;
+    }
+  }
+  return elevPoints[elevPoints.length - 1].e;
+}
+function groundY(wx) { return BASE_Y - elevation(wx); }
+// 勾配: 正=上り、負=下り
+function slopeAt(wx) { return (elevation(wx + 12) - elevation(wx - 12)) / 24; }
+
+// ================= ゲーム状態 =================
+let state;
+function reset() {
+  state = {
+    phase: "title",      // title / run / clear / gameover
+    worldX: 0,           // プレーヤーのワールド座標
+    speed: CONF.minSpeed,
+    hp: CONF.hpMax,
+    hpCap: CONF.hpMax,   // 回復上限（疲労で低下）
+    py: groundY(0),      // プレーヤーの足元Y
+    vy: 0,
+    onGround: true,
+    inventory: { candy: 2, banana: 1, drink: 0, onigiri: 0 },
+    selected: 0,         // FOODSのindex
+    time: 0,
+    flash: 0,            // 被ダメ時の画面フラッシュ
+    messages: [],        // {text, timer, color}
+    hazardsHit: new Set(),
+    pickupsTaken: new Set(),
+    eatCooldown: 0,
+    legPhase: 0,
+  };
+}
+reset();
+
+function addMsg(text, color = "#ffffff") {
+  state.messages.push({ text, timer: 1.6, color });
+  if (state.messages.length > 4) state.messages.shift();
+}
+
+// ================= 入力 =================
+const keys = {};
+window.addEventListener("keydown", (e) => {
+  if (["Space", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.code)) e.preventDefault();
+  if (keys[e.code]) return;
+  keys[e.code] = true;
+
+  if (state.phase === "title" && (e.code === "Space" || e.code === "Enter")) {
+    state.phase = "run";
+    return;
+  }
+  if (e.code === "KeyR") { reset(); state.phase = "run"; return; }
+  if (state.phase !== "run") return;
+
+  if (e.code === "Space" && state.onGround) {
+    state.vy = CONF.jumpVel;
+    state.onGround = false;
+  }
+  if (e.code === "ArrowLeft")  state.selected = (state.selected + FOODS.length - 1) % FOODS.length;
+  if (e.code === "ArrowRight") state.selected = (state.selected + 1) % FOODS.length;
+  if (e.code === "Digit1") state.selected = 0;
+  if (e.code === "Digit2") state.selected = 1;
+  if (e.code === "Digit3") state.selected = 2;
+  if (e.code === "Digit4") state.selected = 3;
+  if (e.code === "KeyE") eatSelected();
+});
+window.addEventListener("keyup", (e) => { keys[e.code] = false; });
+
+function eatSelected() {
+  if (state.eatCooldown > 0) return;
+  const food = FOODS[state.selected];
+  if (state.inventory[food.id] <= 0) {
+    addMsg(`${food.name} を持っていない！`, "#ff9090");
+    return;
+  }
+  state.inventory[food.id]--;
+  const before = state.hp;
+  state.hp = Math.min(state.hpCap, state.hp + food.heal);
+  const healed = Math.round(state.hp - before);
+  state.eatCooldown = 0.8;
+  if (state.hp >= state.hpCap - 0.01 && state.hpCap < CONF.hpMax) {
+    addMsg(`${food.name} +${healed}（疲労でこれ以上回復しない…）`, "#ffcf6b");
+  } else {
+    addMsg(`${food.name} で回復 +${healed}`, "#8bff9e");
+  }
+}
+
+// ================= 更新 =================
+function effectiveMaxSpeed() {
+  if (state.hp >= CONF.tiredThreshold) return CONF.maxSpeed;
+  const t = state.hp / CONF.tiredThreshold; // 0..1
+  return CONF.tiredMinMaxSpeed + (CONF.maxSpeed - CONF.tiredMinMaxSpeed) * t;
+}
+
+function scrollSpeed() {
+  const t = (state.speed - CONF.minSpeed) / (CONF.maxSpeed - CONF.minSpeed);
+  return CONF.scrollMin + (CONF.scrollMax - CONF.scrollMin) * t;
+}
+
+function update(dt) {
+  if (state.phase !== "run") return;
+  state.time += dt;
+  state.eatCooldown = Math.max(0, state.eatCooldown - dt);
+  state.flash = Math.max(0, state.flash - dt * 2);
+  for (const m of state.messages) m.timer -= dt;
+  state.messages = state.messages.filter((m) => m.timer > 0);
+
+  // --- スピードゲージ ---
+  const boosting = keys["ShiftLeft"] || keys["ShiftRight"];
+  if (boosting) state.speed += CONF.speedUpRate * dt;
+  else          state.speed -= CONF.speedDownRate * dt;
+  const maxSp = effectiveMaxSpeed();
+  state.speed = Math.max(CONF.minSpeed, Math.min(maxSp, state.speed));
+
+  // --- 前進 ---
+  const sc = scrollSpeed() * dt * 60;
+  state.worldX += sc;
+  state.legPhase += sc * 0.09;
+
+  // --- ジャンプ・接地 ---
+  const gy = groundY(state.worldX);
+  if (state.onGround) {
+    state.py = gy;
+  } else {
+    state.vy += CONF.gravity * dt * 60;
+    state.py += state.vy * dt * 60;
+    if (state.py >= gy) { state.py = gy; state.vy = 0; state.onGround = true; }
+  }
+
+  // --- 体力消費（速度 × 地形） ---
+  const slope = slopeAt(state.worldX);
+  let terrainFactor = 1.0;
+  if (slope > 0.01)      terrainFactor = 1.0 + (CONF.slopeUphill - 1.0) * Math.min(1, slope / 0.25);
+  else if (slope < -0.01) terrainFactor = 1.0 - (1.0 - CONF.slopeDownhill) * Math.min(1, -slope / 0.25);
+  const spNorm = state.speed / CONF.maxSpeed;
+  const drain = (CONF.drainBase + spNorm * spNorm * CONF.drainSprint) * terrainFactor;
+  state.hp -= drain * dt;
+
+  // --- 疲労による回復上限の低下 ---
+  if (state.hp < CONF.capDropBelow) {
+    state.hpCap = Math.max(CONF.capMin, state.hpCap - CONF.capDropRate * dt);
+  }
+
+  // --- 障害物との衝突（接地したまま突っ込むとダメージ） ---
+  for (let i = 0; i < HAZARDS.length; i++) {
+    if (state.hazardsHit.has(i)) continue;
+    const hz = HAZARDS[i];
+    const def = HAZARD[hz.type];
+    if (state.worldX > hz.x - 14 && state.worldX < hz.x + def.w + 14) {
+      const clearance = groundY(state.worldX) - state.py; // 地面からの高さ
+      if (state.onGround || clearance < 30) {
+        state.hazardsHit.add(i);
+        state.hp -= def.dmg;
+        state.speed = Math.max(CONF.minSpeed, state.speed * 0.4);
+        state.flash = 1;
+        addMsg(`${def.name} にぶつかった！ -${def.dmg}`, "#ff7070");
+      }
+    }
+  }
+
+  // --- アイテム取得 ---
+  for (let i = 0; i < PICKUPS.length; i++) {
+    if (state.pickupsTaken.has(i)) continue;
+    const p = PICKUPS[i];
+    const px = p.x, py = groundY(p.x) - 95;
+    const dx = px - state.worldX, dy = py - (state.py - 28);
+    if (dx * dx + dy * dy < 34 * 34) {
+      state.pickupsTaken.add(i);
+      if (p.kind === "snack") {
+        const before = state.hp;
+        state.hp = Math.min(state.hpCap, state.hp + SNACK_HEAL);
+        addMsg(`スナックバー！ その場で +${Math.round(state.hp - before)}`, "#8bff9e");
+      } else {
+        state.inventory[p.kind]++;
+        const food = FOODS.find((f) => f.id === p.kind);
+        addMsg(`${food.name} を拾った！`, "#9ecbff");
+      }
+    }
+  }
+
+  state.hp = Math.min(state.hpCap, state.hp);
+
+  // --- 終了判定 ---
+  if (state.hp <= 0) { state.hp = 0; state.phase = "gameover"; }
+  if (state.worldX >= CONF.courseLength) state.phase = "clear";
+}
+
+// ================= 描画 =================
+function wx2sx(wx) { return CONF.playerX + (wx - state.worldX); } // ワールド→画面X
+
+function draw() {
+  // 空
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, "#6db7e8");
+  sky.addColorStop(1, "#cfe9f5");
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+
+  drawBgMountains();
+  drawGround();
+  drawHazards();
+  drawPickups();
+  drawGoal();
+  drawPlayer();
+  drawHUD();
+
+  if (state.flash > 0) {
+    ctx.fillStyle = `rgba(255,40,40,${state.flash * 0.25})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+  if (state.phase === "title")    drawOverlay("⛰ トレイルランニング", "スペースキーでスタート");
+  if (state.phase === "gameover") drawOverlay("リタイア…", `走行距離 ${Math.round(state.worldX / 10)}m ／ Rキーで再挑戦`);
+  if (state.phase === "clear")    drawOverlay("🏁 ゴール！", `タイム ${state.time.toFixed(1)}秒 ／ Rキーでもう一度`);
+}
+
+function drawBgMountains() {
+  // 遠景の山（パララックス）
+  ctx.fillStyle = "#a8c8d8";
+  drawRidge(0.2, 300, 120, 700);
+  ctx.fillStyle = "#8fb8a8";
+  drawRidge(0.45, 360, 90, 500);
+}
+function drawRidge(parallax, baseY, amp, wave) {
+  const off = state.worldX * parallax;
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  for (let sx = 0; sx <= W; sx += 20) {
+    const t = (sx + off) / wave;
+    const y = baseY - (Math.sin(t) * 0.6 + Math.sin(t * 2.3) * 0.4) * amp * 0.5 - amp * 0.3;
+    ctx.lineTo(sx, y);
+  }
+  ctx.lineTo(W, H);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawGround() {
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  for (let sx = 0; sx <= W; sx += 6) {
+    ctx.lineTo(sx, groundY(state.worldX + (sx - CONF.playerX)));
+  }
+  ctx.lineTo(W, H);
+  ctx.closePath();
+  ctx.fillStyle = "#7a9e56";
+  ctx.fill();
+  // トレイル（土の道）
+  ctx.beginPath();
+  for (let sx = 0; sx <= W; sx += 6) {
+    const y = groundY(state.worldX + (sx - CONF.playerX));
+    sx === 0 ? ctx.moveTo(sx, y) : ctx.lineTo(sx, y);
+  }
+  ctx.strokeStyle = "#a0764c";
+  ctx.lineWidth = 7;
+  ctx.stroke();
+}
+
+function drawHazards() {
+  for (let i = 0; i < HAZARDS.length; i++) {
+    const hz = HAZARDS[i];
+    const def = HAZARD[hz.type];
+    const sx = wx2sx(hz.x);
+    if (sx < -200 || sx > W + 200) continue;
+    const gy = groundY(hz.x + def.w / 2);
+    if (hz.type === "rock") {
+      ctx.fillStyle = "#6e6e6e";
+      ctx.beginPath();
+      ctx.moveTo(sx, gy + 4);
+      ctx.lineTo(sx + 12, gy - 26);
+      ctx.lineTo(sx + 30, gy - 34);
+      ctx.lineTo(sx + 48, gy - 22);
+      ctx.lineTo(sx + def.w, gy + 4);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = "#8a8a8a";
+      ctx.beginPath();
+      ctx.arc(sx + 22, gy - 12, 12, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (hz.type === "river") {
+      ctx.fillStyle = "#4a90d9";
+      ctx.beginPath();
+      ctx.moveTo(sx, groundY(hz.x) + 2);
+      ctx.quadraticCurveTo(sx + def.w / 2, gy + 30, sx + def.w, groundY(hz.x + def.w) + 2);
+      ctx.closePath();
+      ctx.fill();
+      // 波しぶき
+      ctx.strokeStyle = "#bfe3ff";
+      ctx.lineWidth = 2;
+      for (let k = 0; k < 3; k++) {
+        const wxk = sx + 20 + k * 30 + Math.sin(state.time * 4 + k) * 4;
+        ctx.beginPath();
+        ctx.arc(wxk, gy + 8, 6, Math.PI, 0);
+        ctx.stroke();
+      }
+    } else if (hz.type === "cliff") {
+      // 崖の割れ目
+      ctx.fillStyle = "#3a3028";
+      ctx.beginPath();
+      ctx.moveTo(sx, groundY(hz.x));
+      ctx.lineTo(sx + def.w * 0.35, gy + 90);
+      ctx.lineTo(sx + def.w * 0.65, gy + 90);
+      ctx.lineTo(sx + def.w, groundY(hz.x + def.w));
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = "#241d16";
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
+    // 注意サイン（未通過のみ）
+    if (!state.hazardsHit.has(i) && hz.x > state.worldX) {
+      ctx.fillStyle = "rgba(255, 220, 60, 0.9)";
+      ctx.font = "bold 14px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("⚠", sx + def.w / 2, gy - 46);
+    }
+  }
+}
+
+function drawPickups() {
+  for (let i = 0; i < PICKUPS.length; i++) {
+    if (state.pickupsTaken.has(i)) continue;
+    const p = PICKUPS[i];
+    const sx = wx2sx(p.x);
+    if (sx < -60 || sx > W + 60) continue;
+    const sy = groundY(p.x) - 95 + Math.sin(state.time * 3 + i) * 5;
+    // 光る背景
+    ctx.fillStyle = "rgba(255,255,255,0.35)";
+    ctx.beginPath();
+    ctx.arc(sx, sy, 18, 0, Math.PI * 2);
+    ctx.fill();
+    drawItemIcon(p.kind, sx, sy, 1.0);
+  }
+}
+
+function drawItemIcon(kind, x, y, s) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(s, s);
+  if (kind === "candy") {
+    // 飴: ピンクの玉 + 包み
+    ctx.fillStyle = "#ff6fa0";
+    ctx.beginPath(); ctx.ellipse(0, 0, 8, 7, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#ffb6cf";
+    ctx.beginPath(); ctx.moveTo(-8, 0); ctx.lineTo(-14, -5); ctx.lineTo(-14, 5); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(8, 0); ctx.lineTo(14, -5); ctx.lineTo(14, 5); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.6)";
+    ctx.beginPath(); ctx.arc(-2.5, -2.5, 2.2, 0, Math.PI * 2); ctx.fill();
+  } else if (kind === "banana") {
+    ctx.strokeStyle = "#ffd93b";
+    ctx.lineWidth = 6;
+    ctx.lineCap = "round";
+    ctx.beginPath(); ctx.arc(0, -3, 9, Math.PI * 0.15, Math.PI * 0.85); ctx.stroke();
+    ctx.fillStyle = "#8a6a20";
+    ctx.fillRect(7, -7, 3, 4);
+  } else if (kind === "drink") {
+    // ドリンクボトル
+    ctx.fillStyle = "#4fc3f7";
+    roundRect(-6, -6, 12, 15, 3); ctx.fill();
+    ctx.fillStyle = "#1c7ab0";
+    ctx.fillRect(-4, -11, 8, 5);
+    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    ctx.fillRect(-4, -3, 3, 9);
+  } else if (kind === "onigiri") {
+    ctx.fillStyle = "#f8f8f4";
+    ctx.beginPath();
+    ctx.moveTo(0, -10);
+    ctx.quadraticCurveTo(11, -10, 10, 3);
+    ctx.quadraticCurveTo(9, 9, 0, 9);
+    ctx.quadraticCurveTo(-9, 9, -10, 3);
+    ctx.quadraticCurveTo(-11, -10, 0, -10);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#2a2f2a";
+    ctx.fillRect(-4, 2, 8, 7);
+  } else if (kind === "snack") {
+    // 栄養スナックバー
+    ctx.fillStyle = "#8a5a2a";
+    roundRect(-11, -6, 22, 12, 3); ctx.fill();
+    ctx.fillStyle = "#a8763e";
+    ctx.fillRect(-8, -4, 5, 8);
+    ctx.fillRect(0, -4, 5, 8);
+    ctx.strokeStyle = "#ffcf6b";
+    ctx.lineWidth = 1.5;
+    roundRect(-11, -6, 22, 12, 3); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawGoal() {
+  const sx = wx2sx(CONF.courseLength);
+  if (sx < -100 || sx > W + 100) return;
+  const gy = groundY(CONF.courseLength);
+  ctx.fillStyle = "#333";
+  ctx.fillRect(sx, gy - 90, 4, 90);
+  ctx.fillStyle = "#e33";
+  ctx.beginPath();
+  ctx.moveTo(sx + 4, gy - 90);
+  ctx.lineTo(sx + 60, gy - 78);
+  ctx.lineTo(sx + 4, gy - 66);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 13px sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText("GOAL", sx + 10, gy - 74);
+}
+
+function drawPlayer() {
+  const x = CONF.playerX, footY = state.py;
+  const slope = slopeAt(state.worldX);
+  const lean = state.onGround ? Math.atan(-slope) * 0.5 : 0.15;
+
+  ctx.save();
+  ctx.translate(x, footY);
+  ctx.rotate(lean);
+
+  const run = state.onGround ? Math.sin(state.legPhase) : 0.7;
+  const run2 = state.onGround ? Math.sin(state.legPhase + Math.PI) : -0.4;
+
+  ctx.strokeStyle = "#2b3547";
+  ctx.lineWidth = 4;
+  ctx.lineCap = "round";
+  // 脚
+  ctx.beginPath(); ctx.moveTo(0, -26); ctx.lineTo(8 * run, -13 + Math.abs(run) * 2); ctx.lineTo(10 * run, 0); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, -26); ctx.lineTo(8 * run2, -13 + Math.abs(run2) * 2); ctx.lineTo(10 * run2, 0); ctx.stroke();
+  // 胴体
+  ctx.strokeStyle = "#e05a3a";
+  ctx.lineWidth = 6;
+  ctx.beginPath(); ctx.moveTo(0, -26); ctx.lineTo(4, -46); ctx.stroke();
+  // 腕
+  ctx.strokeStyle = "#e05a3a";
+  ctx.lineWidth = 3.5;
+  ctx.beginPath(); ctx.moveTo(3, -43); ctx.lineTo(3 + 9 * run2, -36); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(3, -43); ctx.lineTo(3 + 9 * run, -36); ctx.stroke();
+  // 頭
+  ctx.fillStyle = "#f2c9a0";
+  ctx.beginPath(); ctx.arc(6, -54, 7, 0, Math.PI * 2); ctx.fill();
+  // キャップ
+  ctx.fillStyle = "#2e7dd1";
+  ctx.beginPath(); ctx.arc(6, -56, 7, Math.PI, 0); ctx.fill();
+  ctx.fillRect(6, -57, 10, 3);
+
+  ctx.restore();
+}
+
+// ================= HUD =================
+function drawHUD() {
+  // --- 左上: 持ち物（補給食一覧） ---
+  ctx.save();
+  ctx.fillStyle = "rgba(20, 28, 42, 0.78)";
+  roundRect(10, 10, 258, 74, 8);
+  ctx.fill();
+  ctx.fillStyle = "#cfe0f5";
+  ctx.font = "bold 12px sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText("持ち物（←→選択 / Eで補給）", 20, 28);
+  for (let i = 0; i < FOODS.length; i++) {
+    const f = FOODS[i];
+    const bx = 20 + i * 62, by = 38;
+    if (i === state.selected) {
+      ctx.fillStyle = "rgba(255, 230, 120, 0.25)";
+      roundRect(bx - 4, by - 2, 58, 40, 6);
+      ctx.fill();
+      ctx.strokeStyle = "#ffd93b";
+      ctx.lineWidth = 2;
+      roundRect(bx - 4, by - 2, 58, 40, 6);
+      ctx.stroke();
+    }
+    drawItemIcon(f.id, bx + 11, by + 12, 0.8);
+    ctx.fillStyle = state.inventory[f.id] > 0 ? "#ffffff" : "#7a8699";
+    ctx.font = "bold 13px sans-serif";
+    ctx.fillText("×" + state.inventory[f.id], bx + 27, by + 17);
+    ctx.fillStyle = "#9fb0c8";
+    ctx.font = "10px sans-serif";
+    ctx.fillText(f.name, bx + 2, by + 34);
+  }
+  ctx.restore();
+
+  // --- 右上: 体力ゲージ・スピードゲージ ---
+  const gx = W - 290, gw = 270;
+  ctx.fillStyle = "rgba(20, 28, 42, 0.78)";
+  roundRect(gx - 10, 10, gw + 20, 86, 8);
+  ctx.fill();
+
+  // 体力
+  ctx.fillStyle = "#cfe0f5";
+  ctx.font = "bold 12px sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText("体力", gx, 30);
+  drawBar(gx + 46, 20, gw - 46, 14, state.hp / CONF.hpMax, hpColor(), state.hpCap / CONF.hpMax);
+  // スピード
+  ctx.fillStyle = "#cfe0f5";
+  ctx.font = "bold 12px sans-serif";
+  ctx.fillText("スピード", gx, 56);
+  const maxSp = effectiveMaxSpeed();
+  drawBar(gx + 60, 46, gw - 60, 14, state.speed / CONF.maxSpeed, "#4fc3f7", maxSp / CONF.maxSpeed);
+
+  // 地形表示 + 距離
+  const slope = slopeAt(state.worldX);
+  let terrain = "平地";
+  if (slope > 0.01) terrain = "上り坂 ↗（体力消費 大）";
+  else if (slope < -0.01) terrain = "下り坂 ↘（体力消費 小）";
+  ctx.fillStyle = "#9fb0c8";
+  ctx.font = "12px sans-serif";
+  ctx.fillText(`${terrain}`, gx, 80);
+  ctx.textAlign = "right";
+  ctx.fillText(`${Math.round(state.worldX / 10)} / ${CONF.courseLength / 10} m`, gx + gw, 80);
+  ctx.textAlign = "left";
+
+  // --- 進行バー（画面下部） ---
+  const pbY = H - 16;
+  ctx.fillStyle = "rgba(20,28,42,0.6)";
+  roundRect(20, pbY, W - 40, 8, 4);
+  ctx.fill();
+  ctx.fillStyle = "#ffd93b";
+  roundRect(20, pbY, (W - 40) * Math.min(1, state.worldX / CONF.courseLength), 8, 4);
+  ctx.fill();
+
+  // --- メッセージ ---
+  ctx.font = "bold 15px sans-serif";
+  ctx.textAlign = "center";
+  state.messages.forEach((m, i) => {
+    ctx.globalAlpha = Math.min(1, m.timer);
+    ctx.fillStyle = m.color;
+    ctx.fillText(m.text, W / 2, 130 + i * 24);
+  });
+  ctx.globalAlpha = 1;
+
+  // 疲労警告
+  if (state.hp < CONF.tiredThreshold && state.phase === "run") {
+    ctx.fillStyle = state.hp < CONF.capDropBelow ? "#ff8080" : "#ffcf6b";
+    ctx.font = "bold 13px sans-serif";
+    ctx.textAlign = "center";
+    const warn = state.hp < CONF.capDropBelow
+      ? "限界が近い！ 疲労で回復上限が下がっていく…"
+      : "疲れてきた… 最大スピードが落ちている";
+    ctx.fillText(warn, W / 2, 108);
+  }
+  ctx.textAlign = "left";
+}
+
+function hpColor() {
+  if (state.hp > 60) return "#5ecf6a";
+  if (state.hp > 30) return "#ffd93b";
+  return "#ff6060";
+}
+
+// value: 0-1, cap: 0-1（capから右は使用不可ゾーンとして暗く表示）
+function drawBar(x, y, w, h, value, color, cap = 1) {
+  ctx.fillStyle = "#2c3a50";
+  roundRect(x, y, w, h, 5);
+  ctx.fill();
+  if (cap < 1) {
+    ctx.fillStyle = "rgba(120, 60, 60, 0.85)";
+    roundRect(x + w * cap, y, w * (1 - cap), h, 5);
+    ctx.fill();
+  }
+  ctx.fillStyle = color;
+  if (value > 0.005) {
+    roundRect(x, y, Math.max(4, w * Math.min(value, 1)), h, 5);
+    ctx.fill();
+  }
+  ctx.strokeStyle = "rgba(255,255,255,0.25)";
+  ctx.lineWidth = 1;
+  roundRect(x, y, w, h, 5);
+  ctx.stroke();
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function drawOverlay(title, sub) {
+  ctx.fillStyle = "rgba(15, 22, 35, 0.72)";
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "bold 40px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(title, W / 2, H / 2 - 20);
+  ctx.font = "18px sans-serif";
+  ctx.fillStyle = "#cfe0f5";
+  ctx.fillText(sub, W / 2, H / 2 + 24);
+  if (state.phase === "title") {
+    ctx.font = "14px sans-serif";
+    ctx.fillStyle = "#9fb0c8";
+    ctx.fillText("岩・川・ガケはジャンプで回避！ 補給食で体力を管理しながらゴールを目指せ", W / 2, H / 2 + 64);
+  }
+  ctx.textAlign = "left";
+}
+
+// ================= メインループ =================
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
