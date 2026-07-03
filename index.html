@@ -90,10 +90,13 @@ const FOODS = [
 const SNACK_HEAL = 15; // 栄養スナックバー（取った瞬間に回復）
 
 // 障害物ダメージ
+// margin: 当たり判定の前後余白 / clear: セーフに必要な地面からの高さ
+//   岩は高さ分を飛び越える必要があり、川・ガケは落ちなければセーフ
+// 幅は歩行スピードのジャンプでもギリギリ越えられる値（川だけは要スピード）
 const HAZARD = {
-  rock:  { w: 60,  dmg: 15, name: "岩場" },
-  river: { w: 110, dmg: 25, name: "川" },
-  cliff: { w: 90,  dmg: 35, name: "ガケ" },
+  rock:  { w: 46,  dmg: 15, name: "岩場", margin: 5, clear: 22 },
+  river: { w: 110, dmg: 25, name: "川",   margin: 4, clear: 8 },
+  cliff: { w: 54,  dmg: 35, name: "ガケ", margin: 4, clear: 8 },
 };
 
 // ================= コース1 定義（高山コース 2100m） =================
@@ -376,9 +379,9 @@ function update(dt) {
     if (state.hazardsHit.has(i)) continue;
     const hz = HAZARDS[i];
     const def = HAZARD[hz.type];
-    if (state.worldX > hz.x - 14 && state.worldX < hz.x + def.w + 14) {
+    if (state.worldX > hz.x - def.margin && state.worldX < hz.x + def.w + def.margin) {
       const clearance = groundY(state.worldX) - state.py; // 地面からの高さ
-      if (state.onGround || clearance < 30) {
+      if (state.onGround || clearance < def.clear) {
         state.hazardsHit.add(i);
         state.hp -= def.dmg;
         state.speed = Math.max(CONF.minSpeed, state.speed * 0.4);
@@ -535,15 +538,15 @@ function drawHazards() {
       ctx.fillStyle = "#6e6e6e";
       ctx.beginPath();
       ctx.moveTo(sx, gy + 4);
-      ctx.lineTo(sx + 12, gy - 26);
-      ctx.lineTo(sx + 30, gy - 34);
-      ctx.lineTo(sx + 48, gy - 22);
+      ctx.lineTo(sx + 10, gy - 17);
+      ctx.lineTo(sx + 24, gy - 23);
+      ctx.lineTo(sx + 36, gy - 15);
       ctx.lineTo(sx + def.w, gy + 4);
       ctx.closePath();
       ctx.fill();
       ctx.fillStyle = "#8a8a8a";
       ctx.beginPath();
-      ctx.arc(sx + 22, gy - 12, 12, 0, Math.PI * 2);
+      ctx.arc(sx + 17, gy - 8, 9, 0, Math.PI * 2);
       ctx.fill();
     } else if (hz.type === "river") {
       ctx.fillStyle = "#4a90d9";
