@@ -59,7 +59,7 @@ const CONF = {
   speedRiseFlat: 0.6,      // 平地: それなりに上がる
   speedRiseUphill: 0.3,    // 急登: 上がりにくい（勾配に応じて平地→この値へ）
   uphillDecel: 65,         // 登りの強制減速/秒（勾配に比例。高速のまま急登に入っても一気に減速する）
-  uphillSpeedCap: 55,      // 最急勾配で維持できるスピード上限（Shift押下ならここまでは出せる）
+  uphillSpeedCap: 45,      // 最急勾配で維持できるスピード上限（Shift押下ならここまでは出せる）
   scrollMin: 1.6,          // ゲージ最小時のスクロール速度 px/frame
   scrollMax: 7.0,          // ゲージ最大時のスクロール速度 px/frame
   gravity: 0.65,
@@ -73,9 +73,9 @@ const CONF = {
   drainSprint: 4.5,
   slopeUphill: 1.75,       // 上り坂の消費係数（勾配に応じて1.0→この値へ）
   slopeDownhill: 0.55,     // 下り坂の消費係数
-  uphillRunExtra: 1.1,     // 登りで走った時の追加ペナルティ（急登を全力で走ると走行消費が最大2.1倍）
-  tiredThreshold: 50,      // これ以下で最大スピードが低下し始めるHP
-  tiredMinMaxSpeed: 35,    // HP0時点の最大スピード
+  uphillRunExtra: 2.5,     // 登りで走った時の追加ペナルティ（急登では走行消費が最大3.5倍。登りで走るのは大損）
+  tiredThreshold: 60,      // これ以下で最大スピードが低下し始めるHP
+  tiredMinMaxSpeed: 25,    // HP0時点の最大スピード（疲れると本当に走れなくなる）
   // 回復上限（疲労の蓄積）: HPがcapDropBelowを下回っている間、回復上限が徐々に低下
   capDropBelow: 35,
   capDropRate: 2.5,        // 回復上限の低下量/秒
@@ -542,7 +542,7 @@ function update(dt) {
   // 歩行（最低スピード）でも基礎消費分は僅かに減る
   const spT = (state.speed - CONF.minSpeed) / (CONF.maxSpeed - CONF.minSpeed); // 0=歩行, 1=全力
   const runCost = spT * spT * CONF.drainSprint * terrainFactor
-    * (1 + slopeT * CONF.uphillRunExtra * spT); // 登りで走るほど追加ペナルティ
+    * (1 + slopeT * CONF.uphillRunExtra); // 登りで走ると勾配に応じた大きな追加ペナルティ
   let drain = CONF.drainBase * terrainFactor + runCost;
   if (mudded) drain += MUD.drain;       // 泥に足を取られる
   if (windActive) drain += WIND.drain;  // 向かい風に逆らう
