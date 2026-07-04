@@ -57,8 +57,9 @@ const CONF = {
   // 地形によるスピードの上がりやすさ（speedUpRateへの倍率）
   speedRiseDown: 1.0,      // 下り坂: そのまま上がる
   speedRiseFlat: 0.6,      // 平地: それなりに上がる
-  speedRiseUphill: 0.15,   // 急登: ほとんど上がらない（勾配に応じて平地→この値へ）
+  speedRiseUphill: 0.3,    // 急登: 上がりにくい（勾配に応じて平地→この値へ）
   uphillDecel: 65,         // 登りの強制減速/秒（勾配に比例。高速のまま急登に入っても一気に減速する）
+  uphillSpeedCap: 55,      // 最急勾配で維持できるスピード上限（Shift押下ならここまでは出せる）
   scrollMin: 1.6,          // ゲージ最小時のスクロール速度 px/frame
   scrollMax: 7.0,          // ゲージ最大時のスクロール速度 px/frame
   gravity: 0.65,
@@ -507,8 +508,11 @@ function update(dt) {
   } else {
     state.speed -= CONF.speedDownRate * dt;
   }
-  // 登りに入ると勾配に応じて強制減速（高速のまま急登には突っ込めない）
-  if (slopeT > 0) state.speed -= CONF.uphillDecel * slopeT * dt;
+  // 登りでは勾配に応じた維持可能上限まで急減速（Shiftを押していれば上限までは維持できる）
+  if (slopeT > 0) {
+    const cap = CONF.maxSpeed - (CONF.maxSpeed - CONF.uphillSpeedCap) * slopeT;
+    if (state.speed > cap) state.speed = Math.max(cap, state.speed - CONF.uphillDecel * slopeT * dt);
+  }
   const maxSp = effectiveMaxSpeed();
   state.speed = Math.max(CONF.minSpeed, Math.min(maxSp, state.speed));
   const mudded = state.onGround && inMudZone();
@@ -655,13 +659,7 @@ function trailColor(elev) {
 }
 
 function draw() {
-  // 空
-  const sky = ctx.createLinearGradient(0, 0, 0, H);
-  sky.addColorStop(0, "#6db7e8");
-  sky.addColorStop(1, "#cfe9f5");
-  ctx.fillStyle = sky;
-  ctx.fillRect(0, 0, W, H);
-
+  drawSky();
   drawBgMountains();
   drawGround();
   drawMuds();
@@ -694,26 +692,157 @@ function draw() {
   }
 }
 
-function drawBgMountains() {
-  // 遠景の山（パララックス）
-  ctx.fillStyle = "#a8c8d8";
-  drawRidge(0.2, 300, 120, 700);
-  ctx.fillStyle = "#8fb8a8";
-  drawRidge(0.45, 360, 90, 500);
+// 決定的な疑似乱数（背景の形を毎フレーム同じにするため）
+function hash(n) {
+  const s = Math.sin(n * 12.9898) * 43758.5453;
+  return s - Math.floor(s);
 }
-function drawRidge(parallax, baseY, amp, wave) {
+function lerp3(a, b, c, t) {
+  return t < 0.5 ? lerpRGB(a, b, t * 2) : lerpRGB(b, c, (t - 0.5) * 2);
+}
+function rgbaStr(c, a = 1) { return `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`; }
+
+// 空: 標高が上がるほど深い青に。太陽は高所ほどくっきり
+function drawSky() {
+  const e = elevation(state.worldX);
+  const t = clamp01((e - 650) / 450);
+  const top = lerpRGB([121, 180, 221], [52, 106, 180], t);
+  const bot = lerpRGB([217, 237, 246], [150, 196, 228], t);
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, rgbaStr(top));
+  sky.addColorStop(1, rgbaStr(bot));
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+  // 太陽
+  const sunA = 0.45 + 0.45 * t;
+  const g = ctx.createRadialGradient(W - 130, 88, 5, W - 130, 88, 65);
+  g.addColorStop(0, `rgba(255, 250, 215, ${sunA * 0.9})`);
+  g.addColorStop(1, "rgba(255, 250, 215, 0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(W - 210, 10, 160, 160);
+  ctx.fillStyle = `rgba(255, 252, 236, ${sunA})`;
+  ctx.beginPath(); ctx.arc(W - 130, 88, 20, 0, Math.PI * 2); ctx.fill();
+}
+
+// 背景: 標高に応じて 樹林帯 → 岩稜帯 → 雲海と空 に移り変わる
+function drawBgMountains() {
+  const e = elevation(state.worldX);
+  const camAdj = state.camY - (360 - BASE_Y); // ほぼ現在の標高（カメラ追従でスムーズ）
+  const forestA = 1 - clamp01((e - 220) / 320);                        // 樹林帯: 低所のみ
+  const rockyA  = clamp01((e - 120) / 280) * (1 - clamp01((e - 780) / 320)); // 岩稜帯: 中標高
+  const alpineA = clamp01((e - 720) / 380);                            // 雲海: 高所のみ
+  const t = clamp01(e / 1200);
+
+  drawClouds(0.35 + alpineA * 0.5);
+
+  // 遠景の山なみ（色は 樹林の緑 → 岩の灰 → 空気遠近の青白 へブレンド）
+  const farCol  = lerp3([154, 186, 168], [148, 150, 160], [198, 212, 232], t);
+  const nearCol = lerp3([118, 158, 134], [120, 120, 130], [176, 192, 216], t);
+  drawRidge(0.15, 280 + camAdj * 0.05, 120, 700, rgbaStr(farCol));
+  drawRidge(0.28, 342 + camAdj * 0.08, 90, 480, rgbaStr(nearCol));
+
+  if (rockyA > 0.02) drawCrags(rockyA, camAdj);
+  if (forestA > 0.02) {
+    drawTreeline(0.4, 330 + camAdj * 0.16, 26, [74, 112, 84], forestA * 0.55);
+    drawTreeline(0.55, 352 + camAdj * 0.22, 36, [50, 86, 62], forestA * 0.8);
+  }
+  if (alpineA > 0.02) drawCloudSea(alpineA, camAdj);
+}
+
+function drawRidge(parallax, baseY, amp, wave, color) {
   const off = state.worldX * parallax;
-  const camOff = (state.camY - (360 - BASE_Y)) * parallax * 0.6; // 遠景ほど動きが小さい
+  ctx.fillStyle = color;
   ctx.beginPath();
   ctx.moveTo(0, H);
   for (let sx = 0; sx <= W; sx += 20) {
-    const t = (sx + off) / wave;
-    const y = baseY + camOff - (Math.sin(t) * 0.6 + Math.sin(t * 2.3) * 0.4) * amp * 0.5 - amp * 0.3;
+    const u = (sx + off) / wave;
+    const y = baseY - (Math.sin(u) * 0.6 + Math.sin(u * 2.3) * 0.4) * amp * 0.5 - amp * 0.3;
     ctx.lineTo(sx, y);
   }
   ctx.lineTo(W, H);
   ctx.closePath();
   ctx.fill();
+}
+
+// 岩稜帯: ギザギザの岩峰のシルエット
+function drawCrags(alpha, camAdj) {
+  const off = state.worldX * 0.38;
+  const baseY = 420 - camAdj * 0.06;
+  ctx.fillStyle = `rgba(108, 104, 112, ${alpha * 0.8})`;
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  for (let sx = 0; sx <= W; sx += 12) {
+    const u = sx + off;
+    const k = Math.floor(u / 110);
+    const fr = (u % 110) / 110;
+    const h = 60 + hash(k) * 130;
+    const y = baseY - h * (1 - Math.abs(fr * 2 - 1)) - hash(k * 3.7 + Math.floor(fr * 5)) * 9;
+    ctx.lineTo(sx, y);
+  }
+  ctx.lineTo(W, H);
+  ctx.closePath();
+  ctx.fill();
+}
+
+// 樹林帯: 針葉樹のシルエットの列
+function drawTreeline(parallax, baseY, size, col, alpha) {
+  if (baseY > H) return;
+  const off = state.worldX * parallax;
+  ctx.fillStyle = rgbaStr(col, alpha);
+  const step = size * 0.85;
+  const start = -(off % step) - step;
+  for (let sx = start; sx <= W + step; sx += step) {
+    const k = Math.floor((sx + off) / step + 0.5);
+    const h = size * (0.8 + hash(k) * 0.8);
+    const y = baseY + hash(k * 1.31) * 12;
+    ctx.beginPath();
+    ctx.moveTo(sx, y);
+    ctx.lineTo(sx + step * 0.45, y - h);
+    ctx.lineTo(sx + step * 0.9, y);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+
+// 高空に浮かぶ雲（ゆっくり流れる）
+function drawClouds(alpha) {
+  ctx.fillStyle = `rgba(255, 255, 255, ${alpha * 0.55})`;
+  for (let k = 0; k < 4; k++) {
+    const speed = 0.1 + 0.05 * (k % 2);
+    const cx = W + 200 - ((state.worldX * speed + state.time * 7 + k * 330) % (W + 400));
+    const cy = 60 + hash(k * 5.1) * 150;
+    const s = 0.8 + hash(k * 2.7) * 0.7;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, 46 * s, 13 * s, 0, 0, Math.PI * 2);
+    ctx.ellipse(cx - 28 * s, cy + 4 * s, 26 * s, 10 * s, 0, 0, Math.PI * 2);
+    ctx.ellipse(cx + 30 * s, cy + 5 * s, 30 * s, 10 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// 雲海: 高所で眼下の谷を埋める
+function drawCloudSea(alpha, camAdj) {
+  const top = 430 + camAdj * 0.04;
+  const off = state.worldX * 0.22 + state.time * 5;
+  ctx.fillStyle = `rgba(245, 250, 255, ${alpha * 0.9})`;
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  for (let sx = 0; sx <= W; sx += 16) {
+    const u = (sx + off) / 70;
+    const y = top - (Math.sin(u) * 0.5 + Math.sin(u * 2.7 + 1.3) * 0.5) * 14 - 8;
+    ctx.lineTo(sx, y);
+  }
+  ctx.lineTo(W, H);
+  ctx.closePath();
+  ctx.fill();
+  // 雲海のハイライト
+  ctx.fillStyle = `rgba(255, 255, 255, ${alpha * 0.5})`;
+  for (let k = 0; k < 5; k++) {
+    const cx = W - ((off * 1.4 + k * 240) % (W + 240)) + 120;
+    ctx.beginPath();
+    ctx.ellipse(cx, top + 6 + hash(k * 3.3) * 10, 60, 12, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
 }
 
 function drawGround() {
