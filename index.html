@@ -73,13 +73,15 @@ const CONF = {
   drainSprint: 4.5,
   slopeUphill: 1.75,       // 上り坂の消費係数（勾配に応じて1.0→この値へ）
   slopeDownhill: 0.55,     // 下り坂の消費係数
-  uphillRunExtra: 2.5,     // 登りで走った時の追加ペナルティ（急登では走行消費が最大3.5倍。登りで走るのは大損）
+  uphillRunExtra: 2.5,     // 登りで走った時の追加ペナルティ（走行消費への倍率）
+  uphillRunLinear: 16,     // 登りで走ること自体の追加消費/秒（速度比×勾配×この値。登りで走るのは大損）
   tiredThreshold: 60,      // これ以下で最大スピードが低下し始めるHP
   tiredMinMaxSpeed: 25,    // HP0時点の最大スピード（疲れると本当に走れなくなる）
   // 回復上限（疲労の蓄積）: HPがcapDropBelowを下回っている間、回復上限が徐々に低下
   capDropBelow: 35,
-  capDropRate: 2.5,        // 回復上限の低下量/秒
-  capMin: 55,              // 回復上限の下限
+  capDropRate: 6,          // 回復上限の低下量/秒（赤字ペースを続けるとどんどんバテる）
+  capMin: 45,              // 回復上限の下限
+  eatCooldown: 2.5,        // エネルギー補給のクールダウン秒（連続で食べ続けることはできない）
 };
 
 // 補給食の定義（飴 < バナナ < ドリンク < おにぎり）
@@ -433,7 +435,7 @@ function eatSelected() {
   const before = state.hp;
   state.hp = Math.min(state.hpCap, state.hp + food.heal);
   const healed = Math.round(state.hp - before);
-  state.eatCooldown = 0.8;
+  state.eatCooldown = CONF.eatCooldown;
   if (state.hp >= state.hpCap - 0.01 && state.hpCap < CONF.hpMax) {
     addMsg(`${food.name} +${healed}（疲労でこれ以上回復しない…）`, "#ffcf6b");
   } else {
@@ -542,11 +544,13 @@ function update(dt) {
   // 歩行（最低スピード）でも基礎消費分は僅かに減る
   const spT = (state.speed - CONF.minSpeed) / (CONF.maxSpeed - CONF.minSpeed); // 0=歩行, 1=全力
   const runCost = spT * spT * CONF.drainSprint * terrainFactor
-    * (1 + slopeT * CONF.uphillRunExtra); // 登りで走ると勾配に応じた大きな追加ペナルティ
+    * (1 + slopeT * CONF.uphillRunExtra) // 登りで走ると勾配に応じた大きな追加ペナルティ
+    + spT * slopeT * CONF.uphillRunLinear; // さらに登りで速度を出すこと自体が高くつく
   let drain = CONF.drainBase * terrainFactor + runCost;
   if (mudded) drain += MUD.drain;       // 泥に足を取られる
   if (windActive) drain += WIND.drain;  // 向かい風に逆らう
   state.hp -= drain * dt;
+  state.lastDrain = drain; // オーバーペース警告用
 
   // --- カメラの縦追従（山の高低差に合わせてゆっくり追う） ---
   const camTarget = 360 - state.py;
@@ -1275,15 +1279,20 @@ function drawHUD() {
   });
   ctx.globalAlpha = 1;
 
-  // 疲労警告
-  if (state.hp < CONF.tiredThreshold && state.phase === "run") {
-    ctx.fillStyle = state.hp < CONF.capDropBelow ? "#ff8080" : "#ffcf6b";
+  // オーバーペース・疲労警告
+  if (state.phase === "run") {
     ctx.font = "bold 13px sans-serif";
     ctx.textAlign = "center";
-    const warn = state.hp < CONF.capDropBelow
-      ? "限界が近い！ 疲労で回復上限が下がっていく…"
-      : "疲れてきた… 最大スピードが落ちている";
-    ctx.fillText(warn, W / 2, 108);
+    if ((state.lastDrain || 0) > 5) {
+      ctx.fillStyle = "#ff6060";
+      ctx.fillText("⚠ オーバーペース！ 体力が急激に減っている", W / 2, 108);
+    } else if (state.hp < CONF.tiredThreshold) {
+      ctx.fillStyle = state.hp < CONF.capDropBelow ? "#ff8080" : "#ffcf6b";
+      const warn = state.hp < CONF.capDropBelow
+        ? "限界が近い！ 疲労で回復上限が下がっていく…"
+        : "疲れてきた… 最大スピードが落ちている";
+      ctx.fillText(warn, W / 2, 108);
+    }
   }
   ctx.textAlign = "left";
 }
