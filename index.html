@@ -58,6 +58,7 @@ const CONF = {
   speedRiseDown: 1.0,      // 下り坂: そのまま上がる
   speedRiseFlat: 0.6,      // 平地: それなりに上がる
   speedRiseUphill: 0.15,   // 急登: ほとんど上がらない（勾配に応じて平地→この値へ）
+  uphillDecel: 65,         // 登りの強制減速/秒（勾配に比例。高速のまま急登に入っても一気に減速する）
   scrollMin: 1.6,          // ゲージ最小時のスクロール速度 px/frame
   scrollMax: 7.0,          // ゲージ最大時のスクロール速度 px/frame
   gravity: 0.65,
@@ -108,6 +109,14 @@ const WIND    = { speedFactor: 0.6, drain: 0.8, cycle: 4.5, gustLen: 2.2 }; // �
 function bee(x, period = 1.4, phase = 0, base = 95, amp = 55) {
   return { x, period, phase, base, amp };
 }
+
+// 円を描いて浮遊する補給食（回復量が大きいものほど取りにくい）
+// r: 軌道半径 / w: 角速度rad/秒 / cy: 軌道中心の地面からの高さ / grab: 取得判定の半径
+const ORBIT = {
+  drink:   { r: 38, w: 1.6, cy: 100, grab: 30 },
+  onigiri: { r: 68, w: 2.6, cy: 118, grab: 25 },
+};
+const GRAB_DEFAULT = 34; // 飴・バナナの取得判定半径
 
 // ================= コース定義（全コース 2100m） =================
 // segments: [長さpx, 標高変化px] の折れ線（合計が21000未満なら残りは平地）
@@ -451,6 +460,16 @@ function inWindGust() {
   }
   return false;
 }
+// 補給食の現在位置（飴・バナナはその場で上下に揺れ、ドリンク・おにぎりは円軌道で回る）
+function pickupPos(p, i) {
+  const o = ORBIT[p.kind];
+  if (o) {
+    const a = state.time * o.w + i * 1.7;
+    return { x: p.x + Math.cos(a) * o.r, y: groundY(p.x) - o.cy + Math.sin(a) * o.r };
+  }
+  return { x: p.x, y: groundY(p.x) - 95 + Math.sin(state.time * 3 + i) * 5 };
+}
+
 // 蜂の現在位置（上下に往復）
 function beePosition(b) {
   return {
@@ -488,6 +507,8 @@ function update(dt) {
   } else {
     state.speed -= CONF.speedDownRate * dt;
   }
+  // 登りに入ると勾配に応じて強制減速（高速のまま急登には突っ込めない）
+  if (slopeT > 0) state.speed -= CONF.uphillDecel * slopeT * dt;
   const maxSp = effectiveMaxSpeed();
   state.speed = Math.max(CONF.minSpeed, Math.min(maxSp, state.speed));
   const mudded = state.onGround && inMudZone();
@@ -553,9 +574,10 @@ function update(dt) {
   for (let i = 0; i < course.pickups.length; i++) {
     if (state.pickupsTaken.has(i)) continue;
     const p = course.pickups[i];
-    const px = p.x, py = groundY(p.x) - 95;
-    const dx = px - state.worldX, dy = py - (state.py - 28);
-    if (dx * dx + dy * dy < 34 * 34) {
+    const pos = pickupPos(p, i);
+    const grab = ORBIT[p.kind] ? ORBIT[p.kind].grab : GRAB_DEFAULT;
+    const dx = pos.x - state.worldX, dy = pos.y - (state.py - 28);
+    if (dx * dx + dy * dy < grab * grab) {
       state.pickupsTaken.add(i);
       state.inventory[p.kind]++;
       const food = FOODS.find((f) => f.id === p.kind);
@@ -793,9 +815,20 @@ function drawPickups() {
   for (let i = 0; i < course.pickups.length; i++) {
     if (state.pickupsTaken.has(i)) continue;
     const p = course.pickups[i];
-    const sx = wx2sx(p.x);
-    if (sx < -60 || sx > W + 60) continue;
-    const sy = wy2sy(groundY(p.x)) - 95 + Math.sin(state.time * 3 + i) * 5;
+    if (wx2sx(p.x) < -130 || wx2sx(p.x) > W + 130) continue;
+    const o = ORBIT[p.kind];
+    if (o) {
+      // 円軌道をうっすら点線で表示
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+      ctx.setLineDash([4, 6]);
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(wx2sx(p.x), wy2sy(groundY(p.x) - o.cy), o.r, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    const pos = pickupPos(p, i);
+    const sx = wx2sx(pos.x), sy = wy2sy(pos.y);
     // 光る背景
     ctx.fillStyle = "rgba(255,255,255,0.35)";
     ctx.beginPath();
