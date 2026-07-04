@@ -87,98 +87,219 @@ const FOODS = [
   { id: "drink",  name: "ドリンク", heal: 30, color: "#4fc3f7" },
   { id: "onigiri",name: "おにぎり", heal: 45, color: "#f5f5f5" },
 ];
-const SNACK_HEAL = 15; // 栄養スナックバー（取った瞬間に回復）
-
 // 障害物ダメージ
 // margin: 当たり判定の前後余白 / clear: セーフに必要な地面からの高さ
-//   岩は高さ分を飛び越える必要があり、川・ガケは落ちなければセーフ
+//   岩・木の根は高さ分を飛び越える必要があり、川・ガケは落ちなければセーフ
 // 幅は歩行スピードのジャンプでもギリギリ越えられる値（川だけは要スピード）
 const HAZARD = {
-  rock:  { w: 46,  dmg: 15, name: "岩場", margin: 5, clear: 22 },
-  river: { w: 110, dmg: 25, name: "川",   margin: 4, clear: 8 },
-  cliff: { w: 54,  dmg: 35, name: "ガケ", margin: 4, clear: 8 },
+  rock:  { w: 46,  dmg: 15, name: "岩場",   margin: 5, clear: 22 },
+  river: { w: 110, dmg: 25, name: "川",     margin: 4, clear: 8 },
+  cliff: { w: 54,  dmg: 35, name: "ガケ",   margin: 4, clear: 8 },
+  root:  { w: 26,  dmg: 8,  name: "木の根", margin: 4, clear: 14 },
 };
 
-// ================= コース1 定義（高山コース 2100m） =================
-// 地形: [長さpx, 標高変化px] の折れ線。急勾配の登りで2つのピークを越える
-const SEGMENTS = [
-  [800, 0],            // スタートの平地
-  [1000, +220],        // 登り始め
-  [300, 0],
-  [1200, +400],        // 急登①
-  [500, -150],         // 小さな下り（沢）
-  [300, 0],
-  [1500, +520],        // 急登②（長い）
-  [300, 0],            // 尾根
-  [900, +330],         // 山頂への急登
-  [400, 0],            // ★第1ピーク（標高1320）
-  [1200, -430],        // 下り
-  [500, -120],
-  [400, 0],            // 鞍部（谷）
-  [1000, +330],        // 登り返し
-  [300, 0],            // ★第2ピーク（標高1100）
-  [1400, -500],        // 長い下り
-  [400, 0],            // 谷
-  [800, +240],         // 登り返し
-  [1600, -560],        // 大下り
-  [500, 0],
-  [600, +170],         // 最後の登り
-  [1300, -430],        // 下り
-  [400, 0],
-  [200, -20],          // ふもとへ
-  [1200, 0],           // ゴールへの平地
-];
+// エネミー・ギミック
+const BEE     = { dmg: 12, r: 13 };                    // 蜂: 空中を上下に飛ぶ（コース2以降）
+const MUD     = { maxSpeed: 40, drain: 1.2 };          // 泥道: 接地中はスピード制限+消費増（コース3以降）
+const BOULDER = { dmg: 20, r: 15, vx: 4.8 };           // 落石: 前方から転がってくる（コース4以降）
+const WIND    = { speedFactor: 0.6, drain: 0.8, cycle: 4.5, gustLen: 2.2 }; // 強風: 突風の間は進みにくい（コース5）
 
-// 障害物: ワールドX位置。川(river)は下り坂か谷のみに出現（登りには置かない）
-const HAZARDS = [
-  { type: "rock",  x: 1300 },   // 登り
-  { type: "rock",  x: 2700 },   // 急登①
-  { type: "river", x: 3550 },   // 沢の下り
-  { type: "rock",  x: 4700 },   // 急登②
-  { type: "cliff", x: 5700 },   // 尾根
-  { type: "rock",  x: 6300 },   // 山頂への登り
-  { type: "river", x: 7800 },   // 第1ピークからの下り
-  { type: "river", x: 9050 },   // 鞍部の谷
-  { type: "rock",  x: 9900 },   // 登り返し
-  { type: "river", x: 11400 },  // 第2ピークからの下り
-  { type: "cliff", x: 12550 },  // 谷の先
-  { type: "cliff", x: 13500 },  // 大下り
-  { type: "river", x: 14300 },  // 大下り
-  { type: "rock",  x: 15550 },  // 最後の登り
-  { type: "cliff", x: 16500 },  // 下り
-  { type: "river", x: 19600 },  // ふもとの平地（谷）
-];
+// 蜂の定義: xを中心に上下に飛ぶ。period(秒)ごとに一往復、baseは地面からの中心高さ
+function bee(x, period = 1.4, phase = 0, base = 95, amp = 55) {
+  return { x, period, phase, base, amp };
+}
 
-// アイテム出現: ジャンプで届く高さ（地面から約95px上）に浮いている
-// kind: "snack"=栄養スナックバー(即回復) / それ以外はFOODSのid(持ち物に追加)
-const PICKUPS = [
-  { kind: "snack",   x: 1900 },
-  { kind: "candy",   x: 3000 },
-  { kind: "banana",  x: 4600 },
-  { kind: "drink",   x: 5850 },
-  { kind: "snack",   x: 7300 },
-  { kind: "onigiri", x: 8950 },
-  { kind: "candy",   x: 10400 },
-  { kind: "drink",   x: 12300 },
-  { kind: "snack",   x: 13900 },
-  { kind: "banana",  x: 15400 },
-  { kind: "onigiri", x: 17400 },
-  { kind: "snack",   x: 19300 },
+// ================= コース定義（全コース 2100m） =================
+// segments: [長さpx, 標高変化px] の折れ線（合計が21000未満なら残りは平地）
+// hazards: 岩(rock)/川(river)/ガケ(cliff)/木の根(root)。川は下り坂か谷のみに配置
+// pickups: 補給食（ジャンプで届く高さに浮いている）
+// bees: 蜂（コース2以降）/ muds: 泥道（3以降）/ rockfalls: 落石トリガー（4以降）/ winds: 強風ゾーン（5）
+const COURSES = [
+{
+  name: "ふたつのピーク",
+  intro: "山頂を2つ越えるスタンダードな高山コース",
+  segments: [
+    [800, 0], [1000, +220], [300, 0], [1200, +400], [500, -150], [300, 0],
+    [1500, +520], [300, 0], [900, +330], [400, 0],            // ★第1ピーク(標高1320)
+    [1200, -430], [500, -120], [400, 0], [1000, +330], [300, 0], // ★第2ピーク(標高1100)
+    [1400, -500], [400, 0], [800, +240], [1600, -560], [500, 0],
+    [600, +170], [1300, -430], [400, 0], [200, -20], [1200, 0],
+  ],
+  hazards: [
+    { type: "rock",  x: 1300 },  { type: "rock",  x: 2700 },  { type: "river", x: 3550 },
+    { type: "rock",  x: 4700 },  { type: "cliff", x: 5700 },  { type: "rock",  x: 6300 },
+    { type: "river", x: 7800 },  { type: "river", x: 9050 },  { type: "rock",  x: 9900 },
+    { type: "river", x: 11400 }, { type: "cliff", x: 12550 }, { type: "cliff", x: 13500 },
+    { type: "river", x: 14300 }, { type: "rock",  x: 15550 }, { type: "cliff", x: 16500 },
+    { type: "river", x: 19600 },
+  ],
+  pickups: [
+    { kind: "candy",   x: 1900 },  { kind: "candy",   x: 3000 },  { kind: "banana",  x: 4600 },
+    { kind: "drink",   x: 5850 },  { kind: "banana",  x: 7300 },  { kind: "onigiri", x: 8950 },
+    { kind: "candy",   x: 10400 }, { kind: "drink",   x: 12300 }, { kind: "banana",  x: 13900 },
+    { kind: "banana",  x: 15400 }, { kind: "onigiri", x: 17400 }, { kind: "candy",   x: 19300 },
+  ],
+  bees: [], muds: [], rockfalls: [], winds: [],
+},
+{
+  name: "尾根の縦走路",
+  intro: "蜂が飛び交う縦走路。タイミングをずらして跳べ",
+  segments: [
+    [600, 0], [1400, +420], [400, 0], [1300, +430], [300, 0], [800, +250], [500, 0], // 稜線へ(標高1100)
+    [600, -140], [500, +120], [700, -160], [400, +130], [600, -120], [500, +110], [700, -150], [400, 0], // 小刻みな稜線
+    [900, +310], [400, 0],   // ★最高点(標高1200)
+    [1500, -520], [600, 0], [700, +200], [1800, -620], [500, 0], [600, +160], [1400, -420],
+  ],
+  hazards: [
+    { type: "rock",  x: 1300 },  { type: "rock",  x: 2900 },  { type: "rock",  x: 4400 },
+    { type: "cliff", x: 5075 },  { type: "river", x: 5650 },  { type: "river", x: 6750 },
+    { type: "river", x: 7800 },  { type: "rock",  x: 8300 },  { type: "cliff", x: 9450 },
+    { type: "rock",  x: 10100 }, { type: "river", x: 11800 }, { type: "cliff", x: 12700 },
+    { type: "rock",  x: 13400 }, { type: "river", x: 14700 }, { type: "rock",  x: 16400 },
+    { type: "cliff", x: 17400 }, { type: "river", x: 19700 },
+  ],
+  pickups: [
+    { kind: "candy",   x: 1700 },  { kind: "banana",  x: 3300 },  { kind: "drink",   x: 4500 },
+    { kind: "candy",   x: 6150 },  { kind: "banana",  x: 7250 },  { kind: "onigiri", x: 9550 },
+    { kind: "drink",   x: 10800 }, { kind: "candy",   x: 12850 }, { kind: "banana",  x: 13550 },
+    { kind: "onigiri", x: 15800 }, { kind: "banana",  x: 16550 }, { kind: "candy",   x: 18600 },
+    { kind: "drink",   x: 19900 },
+  ],
+  bees: [
+    bee(3320, 1.3, 0), bee(4520, 1.6, 2.1), bee(6170, 1.2, 4.2), bee(7270, 1.5, 1.1),
+    bee(9570, 1.4, 3.2), bee(12870, 1.3, 0.6), bee(15820, 1.7, 2.7), bee(18620, 1.2, 5.1),
+    bee(2200, 1.5, 0.9), bee(8700, 1.3, 2.4), bee(11300, 1.6, 4.8),
+  ],
+  muds: [], rockfalls: [], winds: [],
+},
+{
+  name: "泥の森",
+  intro: "泥道と木の根だらけの森。泥は跳んで越えろ",
+  segments: [
+    [700, 0], [800, +180], [400, -80], [600, +160], [500, -120], [400, 0],
+    [900, +260], [300, 0], [800, -220], [500, 0],
+    [700, +190], [600, -170], [400, 0], [800, +230], [300, 0], [900, -260], [500, 0],
+    [600, +150], [700, -180], [400, 0],
+    [800, +200], [900, -240], [400, 0], [600, +140], [800, -190], [500, 0],
+    [900, +210], [1000, -260],
+  ],
+  hazards: [
+    { type: "root",  x: 1000 },  { type: "root",  x: 2100 },  { type: "river", x: 2700 },
+    { type: "root",  x: 3900 },  { type: "rock",  x: 4400 },  { type: "river", x: 5000 },
+    { type: "cliff", x: 5600 },  { type: "root",  x: 6200 },  { type: "rock",  x: 7400 },
+    { type: "root",  x: 8000 },  { type: "river", x: 9100 },  { type: "cliff", x: 9800 },
+    { type: "root",  x: 10400 }, { type: "rock",  x: 11600 }, { type: "root",  x: 12100 },
+    { type: "river", x: 13000 }, { type: "cliff", x: 13700 }, { type: "river", x: 14900 },
+    { type: "root",  x: 16200 }, { type: "river", x: 19000 },
+  ],
+  pickups: [
+    { kind: "candy",   x: 1600 },  { kind: "banana",  x: 3600 },  { kind: "candy",   x: 4800 },
+    { kind: "drink",   x: 6350 },  { kind: "banana",  x: 8500 },  { kind: "onigiri", x: 9950 },
+    { kind: "candy",   x: 11000 }, { kind: "banana",  x: 12400 }, { kind: "drink",   x: 14100 },
+    { kind: "banana",  x: 16000 }, { kind: "onigiri", x: 17900 }, { kind: "candy",   x: 19800 },
+  ],
+  bees: [
+    bee(3620, 1.4, 0), bee(6370, 1.2, 2.2), bee(9970, 1.6, 4.1), bee(12420, 1.3, 1.3),
+    bee(16020, 1.5, 3.5), bee(19820, 1.2, 0.7), bee(2400, 1.6, 2.9), bee(8100, 1.3, 5.3),
+    bee(13400, 1.4, 1.9),
+  ],
+  muds: [
+    { x: 3050, w: 130 }, { x: 7250, w: 140 }, { x: 11450, w: 120 },
+    { x: 15350, w: 150 }, { x: 18200, w: 160 },
+  ],
+  rockfalls: [], winds: [],
+},
+{
+  name: "岩壁の大登攀",
+  intro: "標高1660の大岩壁。登りでは落石が転がってくる！",
+  segments: [
+    [600, 0], [1400, +430], [300, 0], [1500, +520], [400, -130], [300, 0],
+    [1600, +560], [300, 0], [800, +280], [500, 0],   // ★山頂(標高1660)
+    [1500, -540], [400, 0], [900, -320], [400, 0], [1200, -420], [500, 0],
+    [700, +200], [1500, -500], [400, 0], [600, -80],
+  ],
+  hazards: [
+    { type: "rock",  x: 1500 },  { type: "cliff", x: 2150 },  { type: "rock",  x: 3300 },
+    { type: "river", x: 4000 },  { type: "rock",  x: 5300 },  { type: "cliff", x: 6250 },
+    { type: "rock",  x: 6800 },  { type: "river", x: 8400 },  { type: "cliff", x: 9400 },
+    { type: "river", x: 10100 }, { type: "river", x: 11500 }, { type: "cliff", x: 12350 },
+    { type: "rock",  x: 13000 }, { type: "cliff", x: 14200 }, { type: "river", x: 19000 },
+  ],
+  pickups: [
+    { kind: "candy",   x: 1800 },  { kind: "banana",  x: 2900 },  { kind: "drink",   x: 4300 },
+    { kind: "banana",  x: 5600 },  { kind: "onigiri", x: 6950 },  { kind: "drink",   x: 7500 },
+    { kind: "candy",   x: 8900 },  { kind: "banana",  x: 10700 }, { kind: "drink",   x: 12300 },
+    { kind: "onigiri", x: 13800 }, { kind: "banana",  x: 15500 }, { kind: "onigiri", x: 17500 },
+    { kind: "candy",   x: 19700 },
+  ],
+  bees: [
+    bee(2920, 1.3, 0), bee(5620, 1.5, 2.5), bee(7520, 1.2, 4.4), bee(10720, 1.6, 1.6),
+    bee(13820, 1.3, 3.8), bee(17520, 1.4, 0.9), bee(3600, 1.6, 5.5), bee(9000, 1.2, 2.0),
+  ],
+  muds: [{ x: 15900, w: 140 }],
+  rockfalls: [{ x: 1000 }, { x: 2600 }, { x: 4800 }, { x: 6500 }, { x: 12700 }],
+  winds: [],
+},
+{
+  name: "嵐の大縦走",
+  intro: "強風・泥・落石・蜂、全部入りの最難関",
+  segments: [
+    [600, 0], [1200, +340], [300, 0], [1300, +450], [300, 0], [1100, +390], [400, 0], // ★第1ピーク(標高1180)
+    [1300, -460], [400, 0], [900, +300], [300, 0],  // ★第2ピーク(標高1020)
+    [1400, -480], [400, 0], [800, +260], [1600, -560], [500, 0],
+    [700, +180], [1200, -380], [400, 0], [600, +150], [900, -190],
+  ],
+  hazards: [
+    { type: "rock",  x: 1200 },  { type: "cliff", x: 1900 },  { type: "rock",  x: 3000 },
+    { type: "cliff", x: 3500 },  { type: "rock",  x: 4200 },  { type: "river", x: 5700 },
+    { type: "rock",  x: 7200 },  { type: "river", x: 8700 },  { type: "cliff", x: 9600 },
+    { type: "river", x: 11400 }, { type: "cliff", x: 12400 }, { type: "rock",  x: 13100 },
+    { type: "river", x: 14100 }, { type: "rock",  x: 15400 }, { type: "cliff", x: 16000 },
+    { type: "river", x: 19200 },
+  ],
+  pickups: [
+    { kind: "candy",   x: 1500 },  { kind: "banana",  x: 2700 },  { kind: "drink",   x: 4000 },
+    { kind: "banana",  x: 5500 },  { kind: "onigiri", x: 6700 },  { kind: "drink",   x: 8300 },
+    { kind: "candy",   x: 9700 },  { kind: "banana",  x: 11000 }, { kind: "drink",   x: 12600 },
+    { kind: "onigiri", x: 13900 }, { kind: "banana",  x: 15300 }, { kind: "onigiri", x: 17800 },
+    { kind: "candy",   x: 19800 },
+  ],
+  bees: [
+    bee(2720, 1.3, 0), bee(5520, 1.5, 2.2), bee(8320, 1.2, 4.0), bee(11020, 1.6, 1.2),
+    bee(13920, 1.3, 3.3), bee(17820, 1.4, 0.5), bee(1600, 1.5, 2.8), bee(7000, 1.2, 5.0),
+    bee(12500, 1.6, 1.8), bee(18800, 1.3, 4.5),
+  ],
+  muds: [{ x: 6550, w: 130 }, { x: 17200, w: 150 }],
+  rockfalls: [{ x: 2400 }, { x: 10000 }],
+  winds: [{ x: 4600, w: 900 }, { x: 7600, w: 800 }, { x: 12200, w: 900 }],
+},
 ];
 
 // ================= 地形の高さ計算 =================
 const BASE_Y = 440; // 標高0の地面Y
-const elevPoints = (() => {
-  const pts = [{ x: -2000, e: 0 }];
+let courseIdx = 0, course = COURSES[0], elevPoints = [];
+
+function buildElev() {
+  const pts = [{ x: -2000, e: 0 }, { x: 0, e: 0 }];
   let x = 0, e = 0;
-  pts.push({ x, e });
-  for (const [len, de] of SEGMENTS) {
+  for (const [len, de] of course.segments) {
     x += len; e += de;
     pts.push({ x, e });
   }
+  if (x < CONF.courseLength) { x = CONF.courseLength; pts.push({ x, e }); } // 残りは平地
   pts.push({ x: x + 5000, e });
-  return pts;
-})();
+  elevPoints = pts;
+}
+
+// コースを切り替えてタイトル画面へ
+function setCourse(i) {
+  courseIdx = (i + COURSES.length) % COURSES.length;
+  course = COURSES[courseIdx];
+  buildElev();
+  bestTimes = loadBest();
+  reset();
+  document.querySelector("h1").textContent = `⛰ トレイルランニング — コース${courseIdx + 1}「${course.name}」`;
+}
 
 function elevation(wx) {
   for (let i = 1; i < elevPoints.length; i++) {
@@ -195,18 +316,18 @@ function groundY(wx) { return BASE_Y - elevation(wx); }
 function slopeAt(wx) { return (elevation(wx + 12) - elevation(wx - 12)) / 24; }
 
 // ================= ベストタイム記録（ベスト5） =================
-const BEST_KEY = "trailrun_best_course1";
+function bestKey() { return "trailrun_best_course" + (courseIdx + 1); } // コース別に記録
 function loadBest() {
   try {
-    const v = JSON.parse(localStorage.getItem(BEST_KEY));
+    const v = JSON.parse(localStorage.getItem(bestKey()));
     if (Array.isArray(v)) return v.filter((n) => typeof n === "number").slice(0, 5);
   } catch (e) { /* localStorageが使えない環境では記録なし扱い */ }
   return [];
 }
 function saveBest(list) {
-  try { localStorage.setItem(BEST_KEY, JSON.stringify(list)); } catch (e) {}
+  try { localStorage.setItem(bestKey(), JSON.stringify(list)); } catch (e) {}
 }
-let bestTimes = loadBest();
+let bestTimes = [];
 // ゴールタイムを記録し、ベスト5内なら順位(0始まり)を、圏外なら-1を返す
 function recordTime(t) {
   const list = [...bestTimes, t].sort((a, b) => a - b).slice(0, 5);
@@ -244,9 +365,12 @@ function reset() {
     legPhase: 0,
     resultRank: -1,      // ゴール時のベスト5順位（0始まり、圏外は-1）
     camY: 360 - groundY(0), // 縦方向カメラオフセット（プレーヤーを画面高さ360付近に保つ）
+    boulders: [],        // 転がってくる落石
+    rockfallsFired: new Set(),
+    invulnBee: 0,        // 蜂に刺された後の無敵時間
   };
 }
-reset();
+setCourse(0);
 
 function addMsg(text, color = "#ffffff") {
   state.messages.push({ text, timer: 1.6, color });
@@ -264,7 +388,14 @@ window.addEventListener("keydown", (e) => {
     state.phase = "run";
     return;
   }
+  if (state.phase === "title") {
+    if (e.code === "ArrowLeft")  { setCourse(courseIdx - 1); return; }
+    if (e.code === "ArrowRight") { setCourse(courseIdx + 1); return; }
+    const n = ["Digit1", "Digit2", "Digit3", "Digit4", "Digit5"].indexOf(e.code);
+    if (n >= 0 && n < COURSES.length) { setCourse(n); return; }
+  }
   if (e.code === "KeyR") { reset(); state.phase = "run"; return; }
+  if (e.code === "KeyT") { setCourse(courseIdx); return; } // タイトル（コース選択）へ
   if (state.phase !== "run") return;
 
   if (e.code === "Space" && state.onGround) {
@@ -307,6 +438,27 @@ function effectiveMaxSpeed() {
   return CONF.tiredMinMaxSpeed + (CONF.maxSpeed - CONF.tiredMinMaxSpeed) * t;
 }
 
+// 泥道の中か（接地判定は呼び出し側）
+function inMudZone() {
+  return course.muds.some((z) => state.worldX > z.x && state.worldX < z.x + z.w);
+}
+// 強風ゾーン内で突風が吹いている最中か
+function inWindGust() {
+  for (let i = 0; i < course.winds.length; i++) {
+    const z = course.winds[i];
+    if (state.worldX > z.x && state.worldX < z.x + z.w
+        && ((state.time + i * 1.7) % WIND.cycle) < WIND.gustLen) return true;
+  }
+  return false;
+}
+// 蜂の現在位置（上下に往復）
+function beePosition(b) {
+  return {
+    x: b.x,
+    y: groundY(b.x) - b.base - b.amp * Math.sin(state.time * Math.PI * 2 / b.period + b.phase),
+  };
+}
+
 function scrollSpeed() {
   const t = (state.speed - CONF.minSpeed) / (CONF.maxSpeed - CONF.minSpeed);
   return CONF.scrollMin + (CONF.scrollMax - CONF.scrollMin) * t;
@@ -338,9 +490,13 @@ function update(dt) {
   }
   const maxSp = effectiveMaxSpeed();
   state.speed = Math.max(CONF.minSpeed, Math.min(maxSp, state.speed));
+  const mudded = state.onGround && inMudZone();
+  if (mudded) state.speed = Math.min(state.speed, MUD.maxSpeed); // 泥道では走れない
 
-  // --- 前進 ---
-  const sc = scrollSpeed() * dt * 60;
+  // --- 前進（強風の突風中は進みにくい） ---
+  const windActive = inWindGust();
+  let sc = scrollSpeed() * dt * 60;
+  if (windActive) sc *= WIND.speedFactor;
   state.worldX += sc;
   state.legPhase += sc * 0.09;
 
@@ -362,7 +518,9 @@ function update(dt) {
   const spT = (state.speed - CONF.minSpeed) / (CONF.maxSpeed - CONF.minSpeed); // 0=歩行, 1=全力
   const runCost = spT * spT * CONF.drainSprint * terrainFactor
     * (1 + slopeT * CONF.uphillRunExtra * spT); // 登りで走るほど追加ペナルティ
-  const drain = CONF.drainBase * terrainFactor + runCost;
+  let drain = CONF.drainBase * terrainFactor + runCost;
+  if (mudded) drain += MUD.drain;       // 泥に足を取られる
+  if (windActive) drain += WIND.drain;  // 向かい風に逆らう
   state.hp -= drain * dt;
 
   // --- カメラの縦追従（山の高低差に合わせてゆっくり追う） ---
@@ -375,9 +533,9 @@ function update(dt) {
   }
 
   // --- 障害物との衝突（接地したまま突っ込むとダメージ） ---
-  for (let i = 0; i < HAZARDS.length; i++) {
+  for (let i = 0; i < course.hazards.length; i++) {
     if (state.hazardsHit.has(i)) continue;
-    const hz = HAZARDS[i];
+    const hz = course.hazards[i];
     const def = HAZARD[hz.type];
     if (state.worldX > hz.x - def.margin && state.worldX < hz.x + def.w + def.margin) {
       const clearance = groundY(state.worldX) - state.py; // 地面からの高さ
@@ -392,24 +550,55 @@ function update(dt) {
   }
 
   // --- アイテム取得 ---
-  for (let i = 0; i < PICKUPS.length; i++) {
+  for (let i = 0; i < course.pickups.length; i++) {
     if (state.pickupsTaken.has(i)) continue;
-    const p = PICKUPS[i];
+    const p = course.pickups[i];
     const px = p.x, py = groundY(p.x) - 95;
     const dx = px - state.worldX, dy = py - (state.py - 28);
     if (dx * dx + dy * dy < 34 * 34) {
       state.pickupsTaken.add(i);
-      if (p.kind === "snack") {
-        const before = state.hp;
-        state.hp = Math.min(state.hpCap, state.hp + SNACK_HEAL);
-        addMsg(`スナックバー！ その場で +${Math.round(state.hp - before)}`, "#8bff9e");
-      } else {
-        state.inventory[p.kind]++;
-        const food = FOODS.find((f) => f.id === p.kind);
-        addMsg(`${food.name} を拾った！`, "#9ecbff");
+      state.inventory[p.kind]++;
+      const food = FOODS.find((f) => f.id === p.kind);
+      addMsg(`${food.name} を拾った！`, "#9ecbff");
+    }
+  }
+
+  // --- 蜂との接触 ---
+  state.invulnBee = Math.max(0, state.invulnBee - dt);
+  for (const b of course.bees) {
+    if (Math.abs(b.x - state.worldX) > 60) continue;
+    const p = beePosition(b);
+    const dx = p.x - state.worldX, dy = p.y - (state.py - 28);
+    if (dx * dx + dy * dy < (BEE.r + 12) ** 2 && state.invulnBee <= 0) {
+      state.invulnBee = 1.2;
+      state.hp -= BEE.dmg;
+      state.flash = 0.8;
+      addMsg(`蜂に刺された！ -${BEE.dmg}`, "#ffb060");
+    }
+  }
+
+  // --- 落石（トリガー地点を越えると前方から転がってくる） ---
+  for (const rf of course.rockfalls) {
+    if (!state.rockfallsFired.has(rf.x) && state.worldX > rf.x) {
+      state.rockfallsFired.add(rf.x);
+      state.boulders.push({ x: state.worldX + 560, hit: false });
+      addMsg("⚠ 落石！", "#ffd93b");
+    }
+  }
+  for (const b of state.boulders) {
+    b.x -= BOULDER.vx * dt * 60;
+    if (!b.hit && Math.abs(b.x - state.worldX) < BOULDER.r + 10) {
+      const clearance = groundY(state.worldX) - state.py;
+      if (clearance < BOULDER.r * 2) {
+        b.hit = true;
+        state.hp -= BOULDER.dmg;
+        state.speed = Math.max(CONF.minSpeed, state.speed * 0.4);
+        state.flash = 1;
+        addMsg(`落石にぶつかった！ -${BOULDER.dmg}`, "#ff7070");
       }
     }
   }
+  state.boulders = state.boulders.filter((b) => b.x > state.worldX - 400);
 
   state.hp = Math.min(state.hpCap, state.hp);
 
@@ -453,10 +642,14 @@ function draw() {
 
   drawBgMountains();
   drawGround();
+  drawMuds();
   drawHazards();
   drawPickups();
+  drawBees();
+  drawBoulders();
   drawGoal();
   drawPlayer();
+  drawWindStreaks();
   drawHUD();
 
   if (state.flash > 0) {
@@ -465,16 +658,17 @@ function draw() {
   }
   if (state.phase === "title") {
     drawOverlay("⛰ トレイルランニング", "スペースキーでスタート");
-    drawBestTimes(-1);
+    drawCourseSelect();
+    drawBestTimes(-1, H / 2 + 138);
   }
-  if (state.phase === "gameover") drawOverlay("リタイア…", `走行距離 ${Math.round(state.worldX / 10)}m ／ Rキーで再挑戦`);
+  if (state.phase === "gameover") drawOverlay("リタイア…", `走行距離 ${Math.round(state.worldX / 10)}m ／ R: 再挑戦 ／ T: コース選択`);
   if (state.phase === "clear") {
     const isNewRecord = state.resultRank === 0;
     drawOverlay(
       isNewRecord ? "🏆 ベストタイム更新！" : "🏁 ゴール！",
-      `タイム ${formatTime(state.time)} ／ Rキーでもう一度`
+      `タイム ${formatTime(state.time)} ／ R: もう一度 ／ T: コース選択`
     );
-    drawBestTimes(state.resultRank);
+    drawBestTimes(state.resultRank, H / 2 + 95);
   }
 }
 
@@ -527,8 +721,8 @@ function drawGround() {
 }
 
 function drawHazards() {
-  for (let i = 0; i < HAZARDS.length; i++) {
-    const hz = HAZARDS[i];
+  for (let i = 0; i < course.hazards.length; i++) {
+    const hz = course.hazards[i];
     const def = HAZARD[hz.type];
     const sx = wx2sx(hz.x);
     if (sx < -200 || sx > W + 200) continue;
@@ -577,6 +771,13 @@ function drawHazards() {
       ctx.strokeStyle = "#241d16";
       ctx.lineWidth = 3;
       ctx.stroke();
+    } else if (hz.type === "root") {
+      // 木の根: 地面から飛び出したアーチ
+      ctx.strokeStyle = "#6b4a2c";
+      ctx.lineWidth = 5;
+      ctx.lineCap = "round";
+      ctx.beginPath(); ctx.arc(sx + 8, gy + 2, 9, Math.PI, 0); ctx.stroke();
+      ctx.beginPath(); ctx.arc(sx + 19, gy + 2, 7, Math.PI, 0); ctx.stroke();
     }
     // 注意サイン（未通過のみ）
     if (!state.hazardsHit.has(i) && hz.x > state.worldX) {
@@ -589,9 +790,9 @@ function drawHazards() {
 }
 
 function drawPickups() {
-  for (let i = 0; i < PICKUPS.length; i++) {
+  for (let i = 0; i < course.pickups.length; i++) {
     if (state.pickupsTaken.has(i)) continue;
-    const p = PICKUPS[i];
+    const p = course.pickups[i];
     const sx = wx2sx(p.x);
     if (sx < -60 || sx > W + 60) continue;
     const sy = wy2sy(groundY(p.x)) - 95 + Math.sin(state.time * 3 + i) * 5;
@@ -643,18 +844,103 @@ function drawItemIcon(kind, x, y, s) {
     ctx.closePath(); ctx.fill();
     ctx.fillStyle = "#2a2f2a";
     ctx.fillRect(-4, 2, 8, 7);
-  } else if (kind === "snack") {
-    // 栄養スナックバー
-    ctx.fillStyle = "#8a5a2a";
-    roundRect(-11, -6, 22, 12, 3); ctx.fill();
-    ctx.fillStyle = "#a8763e";
-    ctx.fillRect(-8, -4, 5, 8);
-    ctx.fillRect(0, -4, 5, 8);
-    ctx.strokeStyle = "#ffcf6b";
-    ctx.lineWidth = 1.5;
-    roundRect(-11, -6, 22, 12, 3); ctx.stroke();
   }
   ctx.restore();
+}
+
+// 泥道: トレイルの上に濃い泥を重ねる
+function drawMuds() {
+  for (const z of course.muds) {
+    const sx0 = wx2sx(z.x), sx1 = wx2sx(z.x + z.w);
+    if (sx1 < -60 || sx0 > W + 60) continue;
+    ctx.strokeStyle = "#5a4632";
+    ctx.lineWidth = 10;
+    ctx.beginPath();
+    for (let sx = sx0; sx <= sx1; sx += 6) {
+      const y = wy2sy(groundY(state.worldX + (sx - CONF.playerX)));
+      sx === sx0 ? ctx.moveTo(sx, y) : ctx.lineTo(sx, y);
+    }
+    ctx.stroke();
+    // 泡
+    ctx.fillStyle = "#6e563c";
+    for (let k = 0; k < 4; k++) {
+      const bx = sx0 + ((k * 41 + state.time * 22) % Math.max(1, sx1 - sx0));
+      const y = wy2sy(groundY(state.worldX + (bx - CONF.playerX)));
+      ctx.beginPath(); ctx.arc(bx, y - 3, 2.5, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.fillStyle = "#8a6a48";
+    ctx.font = "bold 11px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("泥", (sx0 + sx1) / 2, wy2sy(groundY(z.x + z.w / 2)) + 20);
+  }
+  ctx.textAlign = "left";
+}
+
+// 蜂
+function drawBees() {
+  for (const b of course.bees) {
+    const sx = wx2sx(b.x);
+    if (sx < -40 || sx > W + 40) continue;
+    const sy = wy2sy(beePosition(b).y);
+    ctx.save();
+    ctx.translate(sx, sy);
+    // 羽（高速で羽ばたく）
+    const flap = Math.sin(state.time * 40);
+    ctx.fillStyle = "rgba(220, 235, 255, 0.8)";
+    ctx.beginPath(); ctx.ellipse(-2, -8, 6, 3 + flap * 2, -0.5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(4, -8, 6, 3 - flap * 2, 0.5, 0, Math.PI * 2); ctx.fill();
+    // 体（黄黒の縞）
+    ctx.fillStyle = "#ffce33";
+    ctx.beginPath(); ctx.ellipse(0, 0, 10, 7, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#3a2e18";
+    ctx.fillRect(-4, -6.5, 3, 13);
+    ctx.fillRect(2, -6, 3, 12);
+    // 針と目
+    ctx.strokeStyle = "#3a2e18";
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(-10, 0); ctx.lineTo(-14, 2); ctx.stroke();
+    ctx.fillStyle = "#000";
+    ctx.beginPath(); ctx.arc(7.5, -2, 1.6, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+}
+
+// 転がってくる落石
+function drawBoulders() {
+  for (const b of state.boulders) {
+    const sx = wx2sx(b.x);
+    if (sx < -60 || sx > W + 60) continue;
+    const sy = wy2sy(groundY(b.x)) - BOULDER.r + 2;
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(state.time * 7 % (Math.PI * 2));
+    ctx.fillStyle = "#7c7168";
+    ctx.beginPath(); ctx.arc(0, 0, BOULDER.r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#5d544c";
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(-BOULDER.r + 4, 0); ctx.lineTo(BOULDER.r - 4, 0); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, -BOULDER.r + 4); ctx.lineTo(0, BOULDER.r - 4); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// 強風の突風エフェクト
+function drawWindStreaks() {
+  if (state.phase === "run" && !inWindGust()) return;
+  if (state.phase !== "run") return;
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.45)";
+  ctx.lineWidth = 2;
+  ctx.lineCap = "round";
+  for (let k = 0; k < 10; k++) {
+    const y = 50 + (k * 53) % (H - 120) + Math.sin(state.time * 3 + k) * 10;
+    const x = W - ((state.time * 900 + k * 217) % (W + 200)) + 100;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - 70, y + 4); ctx.stroke();
+  }
+  ctx.fillStyle = "#dcefff";
+  ctx.font = "bold 14px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("🌬 強風！", CONF.playerX, wy2sy(state.py) - 95);
+  ctx.textAlign = "left";
 }
 
 function drawGoal() {
@@ -878,9 +1164,9 @@ function roundRect(x, y, w, h, r) {
 }
 
 // ベスト5の一覧を表示（highlightRank: 今回の記録の順位をハイライト、-1でなし）
-function drawBestTimes(highlightRank) {
+function drawBestTimes(highlightRank, by = H / 2 + 95) {
   if (bestTimes.length === 0) return;
-  const bx = W / 2, by = H / 2 + 95;
+  const bx = W / 2;
   ctx.textAlign = "center";
   ctx.fillStyle = "#ffd93b";
   ctx.font = "bold 15px sans-serif";
@@ -908,11 +1194,21 @@ function drawOverlay(title, sub) {
   ctx.font = "18px sans-serif";
   ctx.fillStyle = "#cfe0f5";
   ctx.fillText(sub, W / 2, H / 2 + 24);
-  if (state.phase === "title") {
-    ctx.font = "14px sans-serif";
-    ctx.fillStyle = "#9fb0c8";
-    ctx.fillText("岩・川・ガケはジャンプで回避！ 補給食で体力を管理しながらゴールを目指せ", W / 2, H / 2 + 64);
-  }
+  ctx.textAlign = "left";
+}
+
+// タイトル画面のコース選択UI
+function drawCourseSelect() {
+  ctx.textAlign = "center";
+  ctx.font = "bold 18px sans-serif";
+  ctx.fillStyle = "#ffd93b";
+  ctx.fillText(`◀  コース${courseIdx + 1}「${course.name}」 ▶`, W / 2, H / 2 + 62);
+  ctx.font = "13px sans-serif";
+  ctx.fillStyle = "#cfe0f5";
+  ctx.fillText(course.intro, W / 2, H / 2 + 86);
+  ctx.font = "12px sans-serif";
+  ctx.fillStyle = "#9fb0c8";
+  ctx.fillText("← → でコース選択（1〜5キーでも可）", W / 2, H / 2 + 108);
   ctx.textAlign = "left";
 }
 
